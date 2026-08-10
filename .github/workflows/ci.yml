@@ -69,7 +69,10 @@ jobs:
           assert not bad, f'non-loopback published ports: {bad}'
           minio_data = [v for v in model['services']['minio']['volumes'] if v.get('target') == '/data']
           assert len(minio_data) == 1, minio_data
-          assert minio_data[0].get('bind', {}).get('create_host_path') is False, minio_data[0]
+          # Older Compose versions omit an explicit false from normalized JSON.
+          assert minio_data[0].get('bind', {}).get('create_host_path') is not True, minio_data[0]
+          source = Path('compose.yml').read_text()
+          assert source.count('create_host_path: false') >= 3
           print(f'verified {len(published)} loopback-only published ports and fail-closed MinIO bind')
           PY
 
