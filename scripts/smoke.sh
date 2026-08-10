@@ -8,6 +8,12 @@ set -a
 source "$ROOT/.env"
 set +a
 compose=(docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yml")
+# Create bind sources as the invoking user before Docker can create root-owned paths.
+minio_data_dir=${MINIO_DATA_DIR:-./data/minio}
+backup_dir=${POSTGRES_BACKUP_DIR:-./backups/postgres}
+[[ "$minio_data_dir" = /* ]] || minio_data_dir="$ROOT/${minio_data_dir#./}"
+[[ "$backup_dir" = /* ]] || backup_dir="$ROOT/${backup_dir#./}"
+mkdir -p "$backup_dir" "$minio_data_dir"
 restore_container="infra-stack-restore-${RANDOM}-$$"
 cleanup() {
   docker rm -fv "$restore_container" >/dev/null 2>&1 || true
@@ -49,8 +55,8 @@ printf 'Creating and remotely verifying both backup formats...\n'
 "$ROOT/scripts/postgres/backup-db.sh" smoke_db
 "$ROOT/scripts/postgres/backup-all.sh"
 "$ROOT/scripts/postgres/verify-backups.sh"
-custom_dump=$(find "$ROOT/backups/postgres" -maxdepth 1 -type f -name '*_smoke_db.dump' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
-cluster_dump=$(find "$ROOT/backups/postgres" -maxdepth 1 -type f -name '*_cluster.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
+custom_dump=$(find "$backup_dir" -maxdepth 1 -type f -name '*_smoke_db.dump' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
+cluster_dump=$(find "$backup_dir" -maxdepth 1 -type f -name '*_cluster.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
 [[ -n "$custom_dump" && -n "$cluster_dump" ]]
 
 printf 'Restoring the custom-format dump into a disposable database...\n'
