@@ -47,7 +47,9 @@ printf 'Testing Redis, MinIO, and MongoDB authentication...\n'
   --username "$MONGO_ROOT_USERNAME" --password "$MONGO_ROOT_PASSWORD" \
   --authenticationDatabase admin --eval 'if (db.adminCommand({ping: 1}).ok !== 1) quit(2)'
 
-printf 'Testing access from an independent container on %s...\n' "$INFRA_NETWORK"
+printf 'Testing all application hostnames from an independent container on %s...\n' "$INFRA_NETWORK"
+docker run --rm --network "$INFRA_NETWORK" "$MONGO_IMAGE" \
+  getent hosts postgres redis minio mongo >/dev/null
 docker run --rm --network "$INFRA_NETWORK" "$REDIS_IMAGE" \
   redis-cli -h redis --no-auth-warning -a "$REDIS_PASSWORD" ping | grep -qx PONG
 

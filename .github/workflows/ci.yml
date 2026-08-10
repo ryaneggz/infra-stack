@@ -40,7 +40,10 @@ jobs:
           git diff --check
 
       - name: Generate ephemeral configuration
-        run: make init
+        run: |
+          make init
+          test "$(stat -c '%a' .env)" = 600
+          ! grep -q 'CHANGE_ME_' .env
 
       - name: Validate Compose base, overlay, and profiles
         run: make config

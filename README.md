@@ -55,13 +55,13 @@ The literal `container_name: postgres` is a deliberate single-VM compatibility c
 - [`minio/minio:RELEASE.2025-09-07T16-13-09Z`](https://hub.docker.com/r/minio/minio/tags?name=RELEASE.2025-09-07), digest `sha256:14cea4…936e`, plus pinned [`minio/mc:RELEASE.2025-08-13T08-35-41Z`](https://hub.docker.com/r/minio/mc/tags?name=RELEASE.2025-08-13), digest `sha256:a7fe34…1727`.
 - [`mongo:8.0.28-noble`](https://hub.docker.com/_/mongo/tags?name=8.0.28-noble), digest `sha256:346f9f…d0fe`.
 
-All core manifests include Linux `amd64` and `arm64`. Timescale's prebuilt-container path avoids the project's unsupported native macOS Intel build. Digest pins intentionally do not float to security fixes: review upstream release notes, update tag+digest together, then run `make smoke` and CI.
+All core manifests include Linux `amd64` and `arm64`. The pinned CloudBeaver, pgAdmin, RedisInsight, and Mongo Express manifests also publish both architectures. Timescale's prebuilt-container path avoids the project's unsupported native macOS Intel build. Digest pins intentionally do not float to security fixes: review upstream release notes, update tag+digest together, then run `make smoke` and CI. The repository is MIT-licensed; container images and bundled extensions retain their own upstream licenses (including MinIO's AGPLv3), which operators must review.
 
 ## Configuration and security defaults
 
 Only `.example.env` is tracked. `make init` creates `.env` atomically with strong credentials and refuses to replace an existing file. Git and Docker ignore `.env`, every environment-file variation, `data/`, `backups/`, dumps, checksums, logs, and runtime state while explicitly retaining `.example.env`.
 
-All published mappings use `${BIND_HOST:-127.0.0.1}`. Do not set `BIND_HOST=0.0.0.0` on an Internet-facing VM. Password auth is enabled, but transport inside the Docker network and localhost mappings is plaintext; this stack does not configure TLS, firewalling, secret rotation, auditing, HA, automated failover, scheduling, retention, or encryption. Use host disk encryption, restricted SSH, firewall rules, patched images, least-privilege application users, and off-host backups before production use.
+All published mappings use `${BIND_HOST:-127.0.0.1}`. Do not set `BIND_HOST=0.0.0.0` on an Internet-facing VM. Password auth is enabled, but transport inside the Docker network and localhost mappings is plaintext. Root credentials are present in `.env`, container environments/commands, and Docker inspection metadata; access to the Docker daemon is therefore equivalent to root-secret access. Source only a trusted `.env`. This stack does not configure TLS, firewalling, secret rotation, auditing, HA, automated failover, scheduling, retention, or encryption. Use host disk encryption, restricted SSH, firewall rules, patched images, least-privilege application users, and off-host backups before production use.
 
 ## Attach an application
 

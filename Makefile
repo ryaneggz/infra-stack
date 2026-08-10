@@ -52,7 +52,7 @@ backup-all: ## Back up the cluster (sensitive role hashes included)
 verify-backups: ## Verify local checksums and downloaded MinIO objects
 	@./scripts/postgres/verify-backups.sh
 
-smoke: ## Exercise health, auth, network, backup, and both restore formats
+smoke: network ## Exercise health, auth, network, backup, and both restore formats
 	@./scripts/smoke.sh
 
 reset: ## DESTROYS all local data; requires CONFIRM=destroy

@@ -15,9 +15,11 @@ for checksum in "${checksums[@]}"; do
     set -eu
     mc alias set local http://minio:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null
     expected=\$(cut -d ' ' -f 1 /backups/postgres/$(basename "$checksum"))
-    actual=\$(mc cat local/${POSTGRES_BACKUP_BUCKET:-postgres-backups}/$(basename "$artifact") | sha256sum | cut -d ' ' -f 1)
+    remote_expected=\$(mc cat local/$POSTGRES_BACKUP_BUCKET/$(basename "$checksum") | cut -d ' ' -f 1)
+    actual=\$(mc cat local/$POSTGRES_BACKUP_BUCKET/$(basename "$artifact") | sha256sum | cut -d ' ' -f 1)
+    test \"\$expected\" = \"\$remote_expected\"
     test \"\$expected\" = \"\$actual\"
-    mc stat local/${POSTGRES_BACKUP_BUCKET:-postgres-backups}/$(basename "$checksum") >/dev/null
+    mc stat local/$POSTGRES_BACKUP_BUCKET/$(basename "$checksum") >/dev/null
   "
 done
 printf 'Verified %d local and remote backup pair(s).\n' "${#checksums[@]}"
