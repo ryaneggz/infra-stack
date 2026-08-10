@@ -4,7 +4,7 @@ The current implementation intentionally stops at local, manually invoked backup
 
 ## Phase 1 — local host-persisted storage (implemented)
 
-MinIO persists to `${MINIO_DATA_DIR:-./data/minio}` on the VM. PostgreSQL scripts stage complete dumps, write SHA-256 files, upload checksum-before-data, and stream the object back for verification. This protects against container replacement, **not host or disk loss**.
+MinIO persists to `${MINIO_DATA_DIR:-./data/minio}` on the VM after an ownership/symlink/mode preflight; Compose refuses to auto-create the bind path. PostgreSQL scripts use exclusive locking and 128-bit object names, stage complete mode-`0600` dumps and checksums under mode-`0700` directories, reject existing remote keys, and upload checksum-before-data with attempt-bound cleanup. Restore tooling downloads both remote objects into a clean staging directory, verifies SHA-256, and restores only downloaded bytes. This protects against container replacement and unverified restore sources, **not host or disk loss**.
 
 ## Phase 2 — operator-run remote mirror
 

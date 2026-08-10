@@ -1,49 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-[[ -f "$ROOT/.env" ]] || { printf 'Missing .env; run make init.\n' >&2; exit 1; }
-set -a
-# shellcheck disable=SC1091
-source "$ROOT/.env"
-set +a
-compose=(docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yml")
-# Create bind sources as the invoking user before Docker can create root-owned paths.
-minio_data_dir=${MINIO_DATA_DIR:-./data/minio}
-backup_dir=${POSTGRES_BACKUP_DIR:-./backups/postgres}
-[[ "$minio_data_dir" = /* ]] || minio_data_dir="$ROOT/${minio_data_dir#./}"
-[[ "$backup_dir" = /* ]] || backup_dir="$ROOT/${backup_dir#./}"
-mkdir -p "$backup_dir" "$minio_data_dir"
+"$ROOT/scripts/preflight.sh" >/dev/null
+# shellcheck source=scripts/postgres/common.sh
+source "$ROOT/scripts/postgres/common.sh"
+compose_cmd=(docker compose --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$ROOT/compose.yml")
+if [[ -n ${COMPOSE_OVERRIDE_FILE:-} ]]; then
+  compose_cmd+=(-f "$COMPOSE_OVERRIDE_FILE")
+fi
 restore_container="infra-stack-restore-${RANDOM}-$$"
 cleanup() {
-  docker rm -fv "$restore_container" >/dev/null 2>&1 || true
+  local rc=$?
+  trap - EXIT
+  if docker inspect "$restore_container" >/dev/null 2>&1; then
+    if ! docker rm -fv "$restore_container" >/dev/null; then
+      printf 'Failed to remove disposable restore container %s\n' "$restore_container" >&2
+      ((rc == 0)) && rc=1
+    fi
+  fi
+  exit "$rc"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 printf 'Waiting for the core stack...\n'
-"${compose[@]}" up -d --wait --wait-timeout 240
+"${compose_cmd[@]}" up -d --wait --wait-timeout 240
 
 printf 'Testing PostgreSQL and extensions...\n'
-extensions=$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc \
+extensions=$("${compose_cmd[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc \
   "SELECT string_agg(extname, ',' ORDER BY extname) FROM pg_extension WHERE extname IN ('vector','vectorscale');")
 [[ "$extensions" == vector,vectorscale ]]
-"${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres <<'SQL'
+"${compose_cmd[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres <<'SQL'
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'smoke_db' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS smoke_db;
 CREATE DATABASE smoke_db TEMPLATE template0;
 SQL
-"${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d smoke_db <<'SQL'
+"${compose_cmd[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d smoke_db <<'SQL'
 CREATE TABLE smoke_marker (id integer PRIMARY KEY, value text NOT NULL);
 INSERT INTO smoke_marker VALUES (1, 'backup-restore-ok');
 SQL
 
 printf 'Testing Redis, MinIO, and MongoDB authentication...\n'
-[[ $("${compose[@]}" exec -T redis redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping) == PONG ]]
+[[ $("${compose_cmd[@]}" exec -T redis redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping) == PONG ]]
 # Variables intentionally expand inside the mc utility container.
 # shellcheck disable=SC2016
-"${compose[@]}" --profile tools run --rm --no-deps mc -c \
-  'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing "local/$POSTGRES_BACKUP_BUCKET" >/dev/null && mc ready local'
-"${compose[@]}" exec -T mongo mongosh --quiet \
+mc_run -c 'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing "local/$POSTGRES_BACKUP_BUCKET" >/dev/null && mc ready local'
+"${compose_cmd[@]}" exec -T mongo mongosh --quiet \
   --username "$MONGO_ROOT_USERNAME" --password "$MONGO_ROOT_PASSWORD" \
   --authenticationDatabase admin --eval 'if (db.adminCommand({ping: 1}).ok !== 1) quit(2)'
 
@@ -53,30 +57,64 @@ docker run --rm --network "$INFRA_NETWORK" "$MONGO_IMAGE" \
 docker run --rm --network "$INFRA_NETWORK" "$REDIS_IMAGE" \
   redis-cli -h redis --no-auth-warning -a "$REDIS_PASSWORD" ping | grep -qx PONG
 
+printf 'Testing exclusive local publication lock...\n'
+exec 8>"$BACKUP_DIR/.backup.lock"
+chmod 0600 "$BACKUP_DIR/.backup.lock"
+flock -n 8
+if "$ROOT/scripts/postgres/backup-db.sh" smoke_db >/dev/null 2>&1; then
+  printf 'Concurrent backup unexpectedly acquired the publication lock.\n' >&2
+  exit 1
+fi
+flock -u 8
+exec 8>&-
+
 printf 'Creating and remotely verifying both backup formats...\n'
 "$ROOT/scripts/postgres/backup-db.sh" smoke_db
 "$ROOT/scripts/postgres/backup-all.sh"
 "$ROOT/scripts/postgres/verify-backups.sh"
-custom_dump=$(find "$backup_dir" -maxdepth 1 -type f -name '*_smoke_db.dump' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
-cluster_dump=$(find "$backup_dir" -maxdepth 1 -type f -name '*_cluster.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
+custom_dump=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*_smoke_db_*.dump' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
+cluster_dump=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*_cluster_*.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
 [[ -n "$custom_dump" && -n "$cluster_dump" ]]
+[[ $(stat -c '%a' "$BACKUP_DIR") == 700 ]]
+for sensitive in "$custom_dump" "$custom_dump.sha256" "$cluster_dump" "$cluster_dump.sha256"; do
+  [[ $(stat -c '%a' "$sensitive") == 600 ]]
+done
 
-printf 'Restoring the custom-format dump into a disposable database...\n'
-"$ROOT/scripts/postgres/restore-db.sh" "$custom_dump" restore_smoke
-[[ $("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d restore_smoke -Atqc "SELECT value FROM smoke_marker WHERE id=1") == backup-restore-ok ]]
+printf 'Testing retry rejection without deleting published remote objects...\n'
+if upload_backup "$custom_dump" >/dev/null 2>&1; then
+  printf 'Retry unexpectedly overwrote a remote backup.\n' >&2
+  exit 1
+fi
+"$ROOT/scripts/postgres/verify-backups.sh"
 
-printf 'Restoring the cluster dump into a disposable PostgreSQL 17 container...\n'
+printf 'Downloading clean artifact/checksum pairs from MinIO...\n'
+custom_download=$("$ROOT/scripts/postgres/download-backup.sh" "$(basename "$custom_dump")")
+cluster_download=$("$ROOT/scripts/postgres/download-backup.sh" "$(basename "$cluster_dump")")
+[[ "$custom_download" != "$custom_dump" && "$cluster_download" != "$cluster_dump" ]]
+for downloaded in "$custom_download" "$custom_download.sha256" "$cluster_download" "$cluster_download.sha256"; do
+  [[ $(stat -c '%a' "$downloaded") == 600 ]]
+done
+[[ $(stat -c '%a' "$(dirname "$custom_download")") == 700 ]]
+[[ $(stat -c '%a' "$(dirname "$cluster_download")") == 700 ]]
+
+printf 'Restoring downloaded custom-format bytes into a disposable database...\n'
+"$ROOT/scripts/postgres/restore-db.sh" "$custom_download" restore_smoke
+[[ $("${compose_cmd[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d restore_smoke -Atqc "SELECT value FROM smoke_marker WHERE id=1") == backup-restore-ok ]]
+
+printf 'Restoring downloaded cluster bytes into a disposable PostgreSQL 17 container...\n'
 docker run -d --name "$restore_container" --network "$INFRA_NETWORK" \
   -e POSTGRES_PASSWORD=restore-only "$POSTGRES_IMAGE" >/dev/null
-for _ in {1..60}; do
-  docker exec "$restore_container" pg_isready -U postgres >/dev/null 2>&1 && break
+stable_checks=0
+for _ in {1..90}; do
+  if docker exec "$restore_container" pg_isready -U postgres >/dev/null 2>&1; then
+    ((stable_checks += 1))
+    ((stable_checks >= 3)) && break
+  else
+    stable_checks=0
+  fi
   sleep 2
 done
-docker exec "$restore_container" pg_isready -U postgres >/dev/null
-gzip -dc "$cluster_dump" | docker exec -i "$restore_container" psql -X -U postgres -d postgres >/tmp/infra-stack-pg_dumpall-restore.log 2>&1 || {
-  cat /tmp/infra-stack-pg_dumpall-restore.log >&2
-  exit 1
-}
+((stable_checks >= 3)) || { printf 'Disposable PostgreSQL target never became stably ready.\n' >&2; exit 1; }
+"$ROOT/scripts/postgres/restore-all.sh" "$cluster_download" "$restore_container"
 [[ $(docker exec "$restore_container" psql -X -U postgres -d smoke_db -Atqc "SELECT value FROM smoke_marker WHERE id=1") == backup-restore-ok ]]
-rm -f /tmp/infra-stack-pg_dumpall-restore.log
-printf 'Smoke test passed. Core services remain running; disposable restore target removed.\n'
+printf 'Smoke test passed using MinIO-downloaded bytes for both restore formats.\n'

@@ -44,6 +44,9 @@ jobs:
           make init
           test "$(stat -c '%a' .env)" = 600
           ! grep -q 'CHANGE_ME_' .env
+          make preflight
+          test "$(stat -c '%a' data/minio)" = 700
+          test "$(stat -c '%a' backups/postgres)" = 700
 
       - name: Validate Compose base, overlay, and profiles
         run: make config
@@ -64,7 +67,10 @@ jobs:
           assert published, 'expected published ports'
           bad = [item for item in published if item[1] != '127.0.0.1']
           assert not bad, f'non-loopback published ports: {bad}'
-          print(f'verified {len(published)} loopback-only published ports')
+          minio_data = [v for v in model['services']['minio']['volumes'] if v.get('target') == '/data']
+          assert len(minio_data) == 1, minio_data
+          assert minio_data[0].get('bind', {}).get('create_host_path') is False, minio_data[0]
+          print(f'verified {len(published)} loopback-only published ports and fail-closed MinIO bind')
           PY
 
       - name: Pull core and utility images
@@ -79,18 +85,19 @@ jobs:
             exit 1
           fi
 
-      - name: Cleanup all containers, volumes, network, and runtime files
-        if: always()
+      - name: Assert restrictive backup modes
         run: |
-          docker rm -fv $(docker ps -aq --filter 'name=infra-stack-restore-') 2>/dev/null || true
-          if test -f .env; then
-            docker compose --env-file .env -f compose.yml -f compose.clients.yml --profile pgadmin down --volumes --remove-orphans || true
-            set -a
-            source ./.env
-            set +a
-            docker network rm "${INFRA_NETWORK:-infra}" 2>/dev/null || true
-          fi
-          sudo rm -rf data backups .env /tmp/compose.json /tmp/infra-stack-pg_dumpall-restore.log
-          test ! -e data
-          test ! -e backups
-          test ! -e .env
+          set -euo pipefail
+          test "$(stat -c '%a' backups/postgres)" = 700
+          test "$(stat -c '%a' backups/postgres/downloads)" = 700
+          while IFS= read -r -d '' file; do
+            test "$(stat -c '%a' "$file")" = 600
+          done < <(find backups/postgres -type f -print0)
+          cluster=$(find backups/postgres -maxdepth 1 -type f -name '*_cluster_*.sql.gz' -print -quit)
+          test -n "$cluster"
+          test "$(stat -c '%a' "$cluster")" = 600
+          test "$(stat -c '%a' "$cluster.sha256")" = 600
+
+      - name: Cleanup and assert no runtime state remains
+        if: always()
+        run: ./scripts/ci-cleanup.sh

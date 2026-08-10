@@ -13,7 +13,12 @@ services:
       - "${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/home/postgres/pgdata/data
-      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/010-extensions.sql:ro
+      - type: bind
+        source: ./scripts/postgres/init.sql
+        target: /docker-entrypoint-initdb.d/010-extensions.sql
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [infra]
     cpus: ${POSTGRES_CPUS:-1.50}
     mem_limit: ${POSTGRES_MEMORY:-2g}
@@ -55,7 +60,11 @@ services:
       - "${BIND_HOST:-127.0.0.1}:${MINIO_PORT:-9000}:9000"
       - "${BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
-      - ${MINIO_DATA_DIR:-./data/minio}:/data
+      - type: bind
+        source: ${MINIO_DATA_DIR:-./data/minio}
+        target: /data
+        bind:
+          create_host_path: false
     networks: [infra]
     cpus: ${MINIO_CPUS:-0.75}
     mem_limit: ${MINIO_MEMORY:-1g}
@@ -97,10 +106,20 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-infraadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       POSTGRES_BACKUP_BUCKET: ${POSTGRES_BACKUP_BUCKET:-postgres-backups}
+      MC_CONFIG_DIR: /tmp/.mc
     entrypoint: ["/bin/sh"]
     volumes:
-      - ${POSTGRES_BACKUP_DIR:-./backups/postgres}:/backups/postgres
-      - ./scripts/minio:/scripts/minio:ro
+      - type: bind
+        source: ${POSTGRES_BACKUP_DIR:-./backups/postgres}
+        target: /backups/postgres
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./scripts/minio
+        target: /scripts/minio
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [infra]
 
 volumes:

@@ -31,7 +31,7 @@ make up         # exactly the four core databases
 make smoke      # health/auth/network plus backup and restore verification
 ```
 
-`make ps`, `make logs`, `make pull`, and `make down` cover normal lifecycle operations. `make down` preserves data. `make reset CONFIRM=destroy` is the explicit, irreversible reset; it deletes database volumes, MinIO host data, and local backups.
+`make ps`, `make logs`, `make pull`, and `make down` cover normal lifecycle operations. Startup, clients, backup, download, and smoke targets automatically run `make preflight`: MinIO and PostgreSQL backup host directories are created with mode `0700`, checked for symlinks and wrong ownership, and only then passed to Compose. Long bind syntax sets `create_host_path: false`, so Docker cannot silently create an insecure root-owned MinIO path. `make down` preserves data. `make reset CONFIRM=destroy` is the explicit, irreversible reset; it deletes database volumes, MinIO host data, and local backups.
 
 ## Services
 
@@ -59,7 +59,7 @@ All core manifests include Linux `amd64` and `arm64`. The pinned CloudBeaver, pg
 
 ## Configuration and security defaults
 
-Only `.example.env` is tracked. `make init` creates `.env` atomically with strong credentials and refuses to replace an existing file. Git and Docker ignore `.env`, every environment-file variation, `data/`, `backups/`, dumps, checksums, logs, and runtime state while explicitly retaining `.example.env`.
+Only `.example.env` is tracked. `make init` creates `.env` atomically with strong credentials and refuses to replace an existing file. Git and Docker ignore `.env`, every environment-file variation, `data/`, `backups/`, dumps, checksums, logs, and runtime state while explicitly retaining `.example.env`. Backup processes enforce `umask 077`: backup/download directories are `0700`, and dumps plus sidecar checksums are `0600`. This is especially important for `pg_dumpall`, which contains role password hashes.
 
 All published mappings use `${BIND_HOST:-127.0.0.1}`. Do not set `BIND_HOST=0.0.0.0` on an Internet-facing VM. Password auth is enabled, but transport inside the Docker network and localhost mappings is plaintext. Root credentials are present in `.env`, container environments/commands, and Docker inspection metadata; access to the Docker daemon is therefore equivalent to root-secret access. Source only a trusted `.env`. This stack does not configure TLS, firewalling, secret rotation, auditing, HA, automated failover, scheduling, retention, or encryption. Use host disk encryption, restricted SSH, firewall rules, patched images, least-privilege application users, and off-host backups before production use.
 
@@ -118,32 +118,38 @@ All UI ports are loopback-bound. Defaults: CloudBeaver `8978`, pgAdmin `5050`, R
 ## PostgreSQL backup and restore
 
 ```bash
-make backup-db DB=app   # custom-format YYYY..._app.dump + .sha256
-make backup-all         # gzip SQL cluster dump + .sha256 (SENSITIVE)
-make verify-backups     # local checksum + remote MinIO object/checksum
+make backup-db DB=app   # custom-format ..._app_<128-bit-id>.dump + .sha256
+make backup-all         # gzip SQL ..._cluster_<128-bit-id>.sql.gz + .sha256 (SENSITIVE)
+make verify-backups     # local pair + remote MinIO object/checksum
+make list-backups
 ```
 
-Each command stages a complete non-empty artifact, creates its checksum, publishes checksum-before-data, uploads both through the pinned `mc` service, downloads the remote data as a stream, compares SHA-256, and verifies both objects. The default bucket is `${POSTGRES_BACKUP_BUCKET:-postgres-backups}`. No partial data object is left published after failure.
+Publication uses a non-blocking exclusive host lock and a random 128-bit name. Existing local files or remote keys are rejected—never overwritten. The pinned `mc` upload uses complete single-part puts, ownership metadata, checksum-before-data ordering, and guarded cleanup that removes only keys carrying the current attempt token. A concurrent backup fails closed; retrying an already-published name leaves the existing pair untouched.
 
-Custom restore into a guarded disposable database:
+**Always restore downloaded MinIO bytes, never the untested local source artifact.** Download tooling creates a new mode-`0700` staging directory, fetches both the object and sidecar, validates the sidecar filename and SHA-256, and writes both as `0600`:
 
 ```bash
-scripts/postgres/restore-db.sh backups/postgres/TIMESTAMP_app.dump restore_app_test
+name=20260810T120000Z_app_0123456789abcdef0123456789abcdef.dump
+downloaded=$(scripts/postgres/download-backup.sh "$name")
+scripts/postgres/restore-db.sh "$downloaded" restore_app_test
 docker compose exec postgres psql -U "$POSTGRES_USER" -d restore_app_test
 ```
 
-Cluster restore must use a **fresh PostgreSQL 17 target with the same Timescale all-extensions image**. It recreates databases and roles; role password hashes in `pg_dumpall` output and the gzip file are sensitive. Restrict access and never commit or casually copy them:
+`restore-db.sh` independently requires and validates `FILE.dump.sha256` before changing the target database.
+
+Cluster restore must use a **fresh PostgreSQL 17 target with the same Timescale all-extensions image**. It recreates databases and roles; the downloaded gzip and sidecar remain sensitive. Restrict access and never commit or casually copy them:
 
 ```bash
+name=20260810T120000Z_cluster_0123456789abcdef0123456789abcdef.sql.gz
+downloaded=$(scripts/postgres/download-backup.sh "$name")
 docker run -d --name pg17-restore --network infra \
   -e POSTGRES_PASSWORD=temporary "$POSTGRES_IMAGE"
-gzip -dc backups/postgres/TIMESTAMP_cluster.sql.gz \
-  | docker exec -i pg17-restore psql -X -U postgres -d postgres
-# query restored data, then:
+scripts/postgres/restore-all.sh "$downloaded" pg17-restore
+# inspect/query restored data, then:
 docker rm -fv pg17-restore
 ```
 
-`make smoke` performs both restore paths and queries a known marker. Read the replication path in [`docs/minio-replication-roadmap.md`](docs/minio-replication-roadmap.md).
+`make download-backup NAME=...`, `make restore-db FILE=... TARGET=restore_test`, and `make restore-all FILE=... CONTAINER=...` expose the same guarded operator tools. `make smoke` downloads both pairs into separate clean staging directories, restores only those downloaded bytes, queries known markers, tests lock/retry rejection, and checks restrictive modes. Read the replication path in [`docs/minio-replication-roadmap.md`](docs/minio-replication-roadmap.md).
 
 ## Troubleshooting
 
@@ -151,7 +157,7 @@ docker rm -fv pg17-restore
 - **Port already allocated**: edit the corresponding `*_PORT` or `BIND_HOST` in `.env`; for tunnels use `LOCAL_PORT_OFFSET`.
 - **`postgres` container name conflict**: this stack permits only one instance per VM. Remove/rename the other container only after identifying its owner.
 - **PostgreSQL unhealthy**: inspect `docker compose logs postgres`; extension initialization only runs on a new volume. For a preexisting volume, execute `CREATE EXTENSION IF NOT EXISTS vectorscale CASCADE;` as an owner and verify both extension rows.
-- **Permission errors under `data/minio`**: ensure the host directory is writable by the container and remains private; do not make it world-writable.
+- **MinIO/backup path preflight failure**: do not bypass `make preflight`. Remove symlinks, restore ownership to the invoking user, and let preflight enforce mode `0700`; Compose intentionally refuses to auto-create bind sources.
 - **Digest/platform error**: use Linux amd64/arm64 and update to a verified multi-platform upstream manifest rather than deleting only the digest.
 - **Slow first CI/start**: the Timescale all-extensions image is large. Subsequent pulls can use Docker layer cache.
 

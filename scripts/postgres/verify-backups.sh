@@ -9,17 +9,13 @@ checksums=("$BACKUP_DIR"/*.sha256)
 
 for checksum in "${checksums[@]}"; do
   artifact=${checksum%.sha256}
-  [[ -s "$artifact" ]] || { printf 'Missing artifact for %s\n' "$checksum" >&2; exit 1; }
-  (cd "$BACKUP_DIR" && sha256sum --check "$(basename "$checksum")")
-  compose --profile tools run --rm --no-deps mc -c "
-    set -eu
-    mc alias set local http://minio:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null
-    expected=\$(cut -d ' ' -f 1 /backups/postgres/$(basename "$checksum"))
-    remote_expected=\$(mc cat local/$POSTGRES_BACKUP_BUCKET/$(basename "$checksum") | cut -d ' ' -f 1)
-    actual=\$(mc cat local/$POSTGRES_BACKUP_BUCKET/$(basename "$artifact") | sha256sum | cut -d ' ' -f 1)
-    test \"\$expected\" = \"\$remote_expected\"
-    test \"\$expected\" = \"\$actual\"
-    mc stat local/$POSTGRES_BACKUP_BUCKET/$(basename "$checksum") >/dev/null
-  "
+  name=$(basename "$artifact")
+  valid_backup_name "$name" || { printf 'Unsafe backup filename: %s\n' "$name" >&2; exit 1; }
+  verify_artifact_checksum "$artifact"
+  [[ $(stat -c '%a' "$artifact") == 600 && $(stat -c '%a' "$checksum") == 600 ]] || {
+    printf 'Backup pair must have mode 0600: %s\n' "$name" >&2
+    exit 1
+  }
+  mc_run /scripts/minio/verify-backup.sh "$name" "$POSTGRES_BACKUP_BUCKET"
 done
 printf 'Verified %d local and remote backup pair(s).\n' "${#checksums[@]}"

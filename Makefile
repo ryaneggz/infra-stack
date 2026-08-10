@@ -4,12 +4,15 @@ SHELL := /usr/bin/env bash
 COMPOSE = docker compose --env-file .env -f compose.yml
 CLIENTS = $(COMPOSE) -f compose.clients.yml
 
-.PHONY: help init network config pull up down ps logs clients clients-pgadmin backup-db backup-all verify-backups smoke reset
+.PHONY: help init preflight network config pull up down ps logs clients clients-pgadmin backup-db backup-all list-backups download-backup verify-backups restore-db restore-all smoke reset
 help: ## Show commands
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 init: ## Create .env with strong random credentials; never overwrite
 	@./scripts/init.sh
+
+preflight: ## Secure and validate MinIO/backup host paths
+	@./scripts/preflight.sh
 
 network: ## Create the stable external network if absent
 	@set -a; source ./.env; set +a; \
@@ -21,16 +24,16 @@ config: ## Validate the base and client Compose models
 	@$(CLIENTS) config --quiet
 	@$(CLIENTS) --profile pgadmin config --quiet
 
-pull: network ## Pull pinned service images
+pull: preflight network ## Pull pinned service images
 	@$(COMPOSE) --profile tools pull
 
-up: network ## Start the four core databases only
+up: preflight network ## Start the four core databases only
 	@$(COMPOSE) up -d --wait --wait-timeout 240
 
-clients: network ## Start core services and default optional clients
+clients: preflight network ## Start core services and default optional clients
 	@$(CLIENTS) up -d
 
-clients-pgadmin: network ## Start core, default clients, and pgAdmin profile
+clients-pgadmin: preflight network ## Start core, default clients, and pgAdmin profile
 	@$(CLIENTS) --profile pgadmin up -d
 
 down: ## Stop services; preserve database volumes and MinIO host data
@@ -42,17 +45,32 @@ ps: ## Show service status
 logs: ## Follow core service logs
 	@$(COMPOSE) logs -f --tail=100
 
-backup-db: ## Back up one database: make backup-db DB=app
+backup-db: preflight ## Back up one database: make backup-db DB=app
 	@test -n "$(DB)" || { echo 'DB is required: make backup-db DB=app' >&2; exit 2; }
 	@./scripts/postgres/backup-db.sh "$(DB)"
 
-backup-all: ## Back up the cluster (sensitive role hashes included)
+backup-all: preflight ## Back up the cluster (sensitive role hashes included)
 	@./scripts/postgres/backup-all.sh
 
-verify-backups: ## Verify local checksums and downloaded MinIO objects
+list-backups: preflight ## List remote PostgreSQL backup objects
+	@./scripts/postgres/list-backups.sh
+
+download-backup: preflight ## Download+verify remote pair: make download-backup NAME=...
+	@test -n "$(NAME)" || { echo 'NAME is required: make download-backup NAME=...' >&2; exit 2; }
+	@./scripts/postgres/download-backup.sh "$(NAME)"
+
+verify-backups: preflight ## Verify local and remote backup pairs
 	@./scripts/postgres/verify-backups.sh
 
-smoke: network ## Exercise health, auth, network, backup, and both restore formats
+restore-db: preflight ## Restore custom backup: make restore-db FILE=... TARGET=restore_test
+	@test -n "$(FILE)" -a -n "$(TARGET)" || { echo 'FILE and TARGET are required' >&2; exit 2; }
+	@./scripts/postgres/restore-db.sh "$(FILE)" "$(TARGET)"
+
+restore-all: preflight ## Restore cluster dump into disposable container: FILE=... CONTAINER=...
+	@test -n "$(FILE)" -a -n "$(CONTAINER)" || { echo 'FILE and CONTAINER are required' >&2; exit 2; }
+	@./scripts/postgres/restore-all.sh "$(FILE)" "$(CONTAINER)"
+
+smoke: preflight network ## Exercise download, auth, backup, and both restore formats
 	@./scripts/smoke.sh
 
 reset: ## DESTROYS all local data; requires CONFIRM=destroy
