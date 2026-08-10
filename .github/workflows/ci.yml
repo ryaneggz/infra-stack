@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install static checks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Check repository hygiene and shell
+        run: |
+          set -euo pipefail
+          test "$(git ls-files | grep -E '(^|/)([^/]*\.env[^/]*)$' || true)" = ".example.env"
+          test ! -e .env
+          git check-ignore -q .env
+          git check-ignore -q .env.production
+          git check-ignore -q local.env
+          if git check-ignore -q .example.env; then
+            echo '.example.env must remain included' >&2
+            exit 1
+          fi
+          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -x
+          git diff --check
+
+      - name: Generate ephemeral configuration
+        run: make init
+
+      - name: Validate Compose base, overlay, and profiles
+        run: make config
+
+      - name: Assert every default published port is loopback-only
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env -f compose.yml -f compose.clients.yml --profile pgadmin config --format json > /tmp/compose.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          model = json.loads(Path('/tmp/compose.json').read_text())
+          published = []
+          for service, config in model['services'].items():
+              for port in config.get('ports', []):
+                  published.append((service, port.get('host_ip'), port.get('published')))
+          assert published, 'expected published ports'
+          bad = [item for item in published if item[1] != '127.0.0.1']
+          assert not bad, f'non-loopback published ports: {bad}'
+          print(f'verified {len(published)} loopback-only published ports')
+          PY
+
+      - name: Pull core and utility images
+        run: make pull
+
+      - name: Run full local smoke test
+        run: |
+          set -o pipefail
+          if ! timeout 30m make smoke; then
+            docker compose --env-file .env -f compose.yml ps || true
+            docker compose --env-file .env -f compose.yml logs --no-color --tail=200 || true
+            exit 1
+          fi
+
+      - name: Cleanup all containers, volumes, network, and runtime files
+        if: always()
+        run: |
+          docker rm -fv $(docker ps -aq --filter 'name=infra-stack-restore-') 2>/dev/null || true
+          if test -f .env; then
+            docker compose --env-file .env -f compose.yml -f compose.clients.yml --profile pgadmin down --volumes --remove-orphans || true
+            set -a
+            source ./.env
+            set +a
+            docker network rm "${INFRA_NETWORK:-infra}" 2>/dev/null || true
+          fi
+          sudo rm -rf data backups .env /tmp/compose.json /tmp/infra-stack-pg_dumpall-restore.log
+          test ! -e data
+          test ! -e backups
+          test ! -e .env

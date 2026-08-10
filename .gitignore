@@ -1,0 +1,16 @@
+# Environment and credentials: only .example.env is tracked.
+.env
+.env.*
+*.env
+*.env.*
+!.example.env
+
+# Persistent/runtime state
+data/
+backups/
+*.dump
+*.sql.gz
+*.sha256
+*.pid
+*.log
+.DS_Store

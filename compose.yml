@@ -1,0 +1,114 @@
+name: ${COMPOSE_PROJECT_NAME:-infra-stack}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-timescale/timescaledb-ha:pg17.6-ts2.21.3-all@sha256:10018cdcf4dce486671ceecae177729a2e0506b288e19acba1eda701b76b608f}
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-infra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/home/postgres/pgdata/data
+      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/010-extensions.sql:ro
+    networks: [infra]
+    cpus: ${POSTGRES_CPUS:-1.50}
+    mem_limit: ${POSTGRES_MEMORY:-2g}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -Atqc \"SELECT count(*) = 2 FROM pg_extension WHERE extname IN ('vector','vectorscale')\" | grep -qx t"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks: [infra]
+    cpus: ${REDIS_CPUS:-0.50}
+    mem_limit: ${REDIS_MEMORY:-512m}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a '$${REDIS_PASSWORD}' ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-infraadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${MINIO_PORT:-9000}:9000"
+      - "${BIND_HOST:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ${MINIO_DATA_DIR:-./data/minio}:/data
+    networks: [infra]
+    cpus: ${MINIO_CPUS:-0.75}
+    mem_limit: ${MINIO_MEMORY:-1g}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  mongo:
+    image: ${MONGO_IMAGE:-mongo:8.0.28-noble@sha256:346f9f37eb0f1b75600929979a8f62372e6c717e58a291736db09188acaad0fe}
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-infra}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-app}
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks: [infra]
+    cpus: ${MONGO_CPUS:-1.00}
+    mem_limit: ${MONGO_MEMORY:-1536m}
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username '$${MONGO_INITDB_ROOT_USERNAME}' --password '$${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase admin --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)'"]
+      interval: 10s
+      timeout: 7s
+      retries: 18
+      start_period: 20s
+
+  mc:
+    image: ${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727}
+    profiles: [tools]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-infraadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      POSTGRES_BACKUP_BUCKET: ${POSTGRES_BACKUP_BUCKET:-postgres-backups}
+    entrypoint: ["/bin/sh"]
+    volumes:
+      - ${POSTGRES_BACKUP_DIR:-./backups/postgres}:/backups/postgres
+      - ./scripts/minio:/scripts/minio:ro
+    networks: [infra]
+
+volumes:
+  postgres_data:
+  redis_data:
+  mongo_data:
+
+networks:
+  infra:
+    name: ${INFRA_NETWORK:-infra}
+    external: true
