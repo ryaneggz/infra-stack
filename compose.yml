@@ -36,7 +36,7 @@ services:
     cpus: ${REDIS_CPUS:-0.50}
     mem_limit: ${REDIS_MEMORY:-512m}
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a '$${REDIS_PASSWORD}' ping | grep -qx PONG"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -qx PONG"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -81,7 +81,7 @@ services:
     cpus: ${MONGO_CPUS:-1.00}
     mem_limit: ${MONGO_MEMORY:-1536m}
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --username '$${MONGO_INITDB_ROOT_USERNAME}' --password '$${MONGO_INITDB_ROOT_PASSWORD}' --authenticationDatabase admin --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)'"]
+      test: ["CMD-SHELL", "mongosh --quiet --username \"$${MONGO_INITDB_ROOT_USERNAME}\" --password \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 2)'"]
       interval: 10s
       timeout: 7s
       retries: 18
