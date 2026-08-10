@@ -13,7 +13,8 @@ if [[ "$TARGET_DB" != restore_* && ${ALLOW_UNSAFE_RESTORE:-0} != 1 ]]; then
 fi
 
 compose exec -T postgres dropdb --username "$POSTGRES_USER" --if-exists "$TARGET_DB"
-compose exec -T postgres createdb --username "$POSTGRES_USER" "$TARGET_DB"
+# template0 avoids inheriting preloaded extensions that the dump must recreate.
+compose exec -T postgres createdb --username "$POSTGRES_USER" --template template0 "$TARGET_DB"
 compose exec -T postgres pg_restore --username "$POSTGRES_USER" \
   --dbname "$TARGET_DB" --clean --if-exists --no-owner < "$DUMP"
 printf 'Restored %s into %s\n' "$DUMP" "$TARGET_DB"

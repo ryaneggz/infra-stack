@@ -30,7 +30,7 @@ extensions=$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POST
 "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres <<'SQL'
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'smoke_db' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS smoke_db;
-CREATE DATABASE smoke_db;
+CREATE DATABASE smoke_db TEMPLATE template0;
 SQL
 "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d smoke_db <<'SQL'
 CREATE TABLE smoke_marker (id integer PRIMARY KEY, value text NOT NULL);
