@@ -122,8 +122,45 @@ if ((writer_one_rc != 0)); then loser_log="$BACKUP_DIR/.race-writer-1.log"; else
 grep -Fq 'pre-conditions you specified did not hold' "$loser_log"
 rm -f "$BACKUP_DIR/.race-writer-1.log" "$BACKUP_DIR/.race-writer-2.log"
 mc_run /scripts/minio/verify-backup.sh "$race_name" "$POSTGRES_BACKUP_BUCKET"
-printf 'Atomic If-None-Match race passed: one writer rejected, winner retained and verified.\n'
+printf 'Atomic checksum If-None-Match race passed: one writer rejected, winner retained and verified.\n'
 "$ROOT/scripts/postgres/verify-backups.sh"
+
+printf 'Testing independent artifact PUT conflict after checksum creation...\n'
+artifact_conflict_id=$(new_backup_id)
+artifact_conflict_name="$(date -u +%Y%m%dT%H%M%SZ)_artifactrace_${artifact_conflict_id}.dump"
+artifact_conflict="$BACKUP_DIR/$artifact_conflict_name"
+artifact_barrier="$BACKUP_DIR/.artifact-put-race-ready"
+artifact_log="$BACKUP_DIR/.artifact-put-race.log"
+cp "$custom_dump" "$artifact_conflict"
+(
+  cd "$BACKUP_DIR"
+  sha256sum "$artifact_conflict_name" > "$artifact_conflict_name.sha256"
+)
+chmod 0600 "$artifact_conflict" "$artifact_conflict.sha256"
+rm -f "$artifact_barrier"
+(
+  # shellcheck disable=SC2030,SC2031
+  export MINIO_UPLOAD_PRE_PUT_DELAY=5
+  export MINIO_UPLOAD_TEST_READY_FILE=/backups/postgres/.artifact-put-race-ready
+  upload_backup "$artifact_conflict"
+) >"$artifact_log" 2>&1 &
+artifact_uploader=$!
+for _ in {1..100}; do
+  [[ -f "$artifact_barrier" ]] && break
+  sleep 0.1
+done
+[[ -f "$artifact_barrier" ]] || { printf 'Artifact race uploader never reached the post-check barrier.\n' >&2; exit 1; }
+mc_run /scripts/minio/create-artifact-conflict.sh \
+  "$artifact_conflict_name" "$POSTGRES_BACKUP_BUCKET" "$artifact_conflict_id"
+set +e
+wait "$artifact_uploader"; artifact_uploader_rc=$?
+set -e
+((artifact_uploader_rc != 0)) || { printf 'Artifact conditional PUT unexpectedly overwrote the external key.\n' >&2; exit 1; }
+grep -Fq 'pre-conditions you specified did not hold' "$artifact_log"
+mc_run /scripts/minio/verify-artifact-conflict.sh \
+  "$artifact_conflict_name" "$POSTGRES_BACKUP_BUCKET" "$artifact_conflict_id"
+rm -f "$artifact_conflict" "$artifact_conflict.sha256" "$artifact_barrier" "$artifact_log"
+printf 'Atomic artifact If-None-Match conflict passed: external bytes retained; owned checksum cleaned.\n'
 
 printf 'Downloading clean artifact/checksum pairs from MinIO...\n'
 custom_download=$("$ROOT/scripts/postgres/download-backup.sh" "$(basename "$custom_dump")")

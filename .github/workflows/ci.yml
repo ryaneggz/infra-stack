@@ -37,6 +37,7 @@ jobs:
             exit 1
           fi
           find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -x
+          test "$(grep -Foc -- "-H 'If-None-Match:*'" scripts/minio/upload-backup.sh)" = 2
           git diff --check
 
       - name: Generate ephemeral configuration

@@ -6,6 +6,7 @@ artifact=${1:-}
 bucket=${2:-${POSTGRES_BACKUP_BUCKET:-postgres-backups}}
 attempt=${3:-}
 delay=${MINIO_UPLOAD_PRE_PUT_DELAY:-0}
+test_ready_file=${MINIO_UPLOAD_TEST_READY_FILE:-}
 checksum="$artifact.sha256"
 case "$bucket" in
   *[!a-z0-9.-]*|[-.]*|*[-.]|*..*) echo "Invalid S3 bucket name" >&2; exit 2 ;;
@@ -18,6 +19,10 @@ case "$attempt" in *[!a-f0-9]*|'') echo "Invalid upload attempt id" >&2; exit 2 
 [ "${#attempt}" -eq 32 ] || { echo "Upload attempt id must be 32 hex characters" >&2; exit 2; }
 case "$delay" in *[!0-9]*|'') echo "Invalid pre-PUT delay" >&2; exit 2 ;; esac
 [ "$delay" -le 5 ] || { echo "Pre-PUT delay must be at most 5 seconds" >&2; exit 2; }
+case "$test_ready_file" in
+  ''|/backups/postgres/.artifact-put-race-ready) ;;
+  *) echo "Invalid test barrier path" >&2; exit 2 ;;
+esac
 case "$artifact" in
   /backups/postgres/*.dump|/backups/postgres/*.sql.gz) ;;
   *) echo "Refusing artifact outside /backups/postgres" >&2; exit 2 ;;
@@ -61,6 +66,12 @@ cleanup() {
 }
 trap cleanup HUP INT TERM EXIT
 
+# Test-only barrier: signals that both key checks completed before a competing
+# writer inserts the artifact key. It is inert in normal operation.
+if [ -n "$test_ready_file" ]; then
+  : > "$test_ready_file"
+  chmod 0600 "$test_ready_file"
+fi
 # The test-only delay forces concurrent writers past the advisory preflight check.
 [ "$delay" -eq 0 ] || sleep "$delay"
 
