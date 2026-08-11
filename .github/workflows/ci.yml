@@ -51,6 +51,9 @@ jobs:
       - name: Validate Compose base, overlay, and profiles
         run: make config
 
+      - name: Adversarial Make argument security
+        run: make security-test
+
       - name: Assert every default published port is loopback-only
         run: |
           set -euo pipefail

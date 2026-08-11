@@ -74,6 +74,15 @@ acquire_backup_lock() {
   flock -n 9 || { printf 'Another backup publication is already running.\n' >&2; return 1; }
 }
 
+validate_downloaded_artifact_path() {
+  local artifact=$1 resolved
+  resolved=$(realpath -e "$artifact") || return 1
+  [[ "$resolved" == "$DOWNLOAD_DIR"/.stage.*/* && ! -L "$artifact" ]] || {
+    printf 'Restore input must be a regular artifact from a clean download staging directory: %s\n' "$artifact" >&2
+    return 1
+  }
+}
+
 verify_artifact_checksum() {
   local artifact=$1 checksum expected listed extra actual
   checksum="$artifact.sha256"

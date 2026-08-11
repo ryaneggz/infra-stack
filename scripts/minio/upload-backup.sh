@@ -5,6 +5,7 @@ umask 077
 artifact=${1:-}
 bucket=${2:-${POSTGRES_BACKUP_BUCKET:-postgres-backups}}
 attempt=${3:-}
+delay=${MINIO_UPLOAD_PRE_PUT_DELAY:-0}
 checksum="$artifact.sha256"
 case "$bucket" in
   *[!a-z0-9.-]*|[-.]*|*[-.]|*..*) echo "Invalid S3 bucket name" >&2; exit 2 ;;
@@ -15,6 +16,8 @@ if [ "${#bucket}" -lt 3 ] || [ "${#bucket}" -gt 63 ]; then
 fi
 case "$attempt" in *[!a-f0-9]*|'') echo "Invalid upload attempt id" >&2; exit 2 ;; esac
 [ "${#attempt}" -eq 32 ] || { echo "Upload attempt id must be 32 hex characters" >&2; exit 2; }
+case "$delay" in *[!0-9]*|'') echo "Invalid pre-PUT delay" >&2; exit 2 ;; esac
+[ "$delay" -le 5 ] || { echo "Pre-PUT delay must be at most 5 seconds" >&2; exit 2; }
 case "$artifact" in
   /backups/postgres/*.dump|/backups/postgres/*.sql.gz) ;;
   *) echo "Refusing artifact outside /backups/postgres" >&2; exit 2 ;;
@@ -58,12 +61,18 @@ cleanup() {
 }
 trap cleanup HUP INT TERM EXIT
 
-# Disable multipart publication and attach an ownership token used by guarded cleanup.
-mc cp --disable-multipart --attr "upload-attempt=$attempt" \
+# The test-only delay forces concurrent writers past the advisory preflight check.
+[ "$delay" -eq 0 ] || sleep "$delay"
+
+# Pinned mc forwards If-None-Match:* to S3 PUT. MinIO atomically returns 412 if
+# the key exists, so even writers racing after the stat checks cannot clobber it.
+mc put --disable-multipart -H 'If-None-Match:*' \
+  -H "X-Amz-Meta-Upload-Attempt:$attempt" \
   "$checksum" "local/$bucket/$name.sha256" >/dev/null
 checksum_created=1
 owns_object "$name.sha256" || { echo "Could not prove checksum object ownership" >&2; exit 1; }
-mc cp --disable-multipart --attr "upload-attempt=$attempt" \
+mc put --disable-multipart -H 'If-None-Match:*' \
+  -H "X-Amz-Meta-Upload-Attempt:$attempt" \
   "$artifact" "local/$bucket/$name" >/dev/null
 artifact_created=1
 owns_object "$name" || { echo "Could not prove artifact object ownership" >&2; exit 1; }

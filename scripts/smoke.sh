@@ -87,6 +87,44 @@ if upload_backup "$custom_dump" >/dev/null 2>&1; then
 fi
 "$ROOT/scripts/postgres/verify-backups.sh"
 
+printf 'Testing atomic no-clobber against two concurrent remote writers...\n'
+race_id=$(new_backup_id)
+race_name="$(date -u +%Y%m%dT%H%M%SZ)_race_${race_id}.dump"
+race_artifact="$BACKUP_DIR/$race_name"
+cp "$custom_dump" "$race_artifact"
+(
+  cd "$BACKUP_DIR"
+  sha256sum "$race_name" > "$race_name.sha256"
+)
+chmod 0600 "$race_artifact" "$race_artifact.sha256"
+(
+  # shellcheck disable=SC2030
+  export MINIO_UPLOAD_PRE_PUT_DELAY=2
+  upload_backup "$race_artifact"
+) >"$BACKUP_DIR/.race-writer-1.log" 2>&1 &
+writer_one=$!
+(
+  # shellcheck disable=SC2030,SC2031
+  export MINIO_UPLOAD_PRE_PUT_DELAY=2
+  upload_backup "$race_artifact"
+) >"$BACKUP_DIR/.race-writer-2.log" 2>&1 &
+writer_two=$!
+set +e
+wait "$writer_one"; writer_one_rc=$?
+wait "$writer_two"; writer_two_rc=$?
+set -e
+if ! { ((writer_one_rc == 0 && writer_two_rc != 0)) || ((writer_one_rc != 0 && writer_two_rc == 0)); }; then
+  cat "$BACKUP_DIR/.race-writer-1.log" "$BACKUP_DIR/.race-writer-2.log" >&2
+  printf 'Expected exactly one conditional writer to succeed; got %s and %s.\n' "$writer_one_rc" "$writer_two_rc" >&2
+  exit 1
+fi
+if ((writer_one_rc != 0)); then loser_log="$BACKUP_DIR/.race-writer-1.log"; else loser_log="$BACKUP_DIR/.race-writer-2.log"; fi
+grep -Fq 'pre-conditions you specified did not hold' "$loser_log"
+rm -f "$BACKUP_DIR/.race-writer-1.log" "$BACKUP_DIR/.race-writer-2.log"
+mc_run /scripts/minio/verify-backup.sh "$race_name" "$POSTGRES_BACKUP_BUCKET"
+printf 'Atomic If-None-Match race passed: one writer rejected, winner retained and verified.\n'
+"$ROOT/scripts/postgres/verify-backups.sh"
+
 printf 'Downloading clean artifact/checksum pairs from MinIO...\n'
 custom_download=$("$ROOT/scripts/postgres/download-backup.sh" "$(basename "$custom_dump")")
 cluster_download=$("$ROOT/scripts/postgres/download-backup.sh" "$(basename "$cluster_dump")")

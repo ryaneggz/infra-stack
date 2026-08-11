@@ -3,13 +3,14 @@ set -euo pipefail
 # shellcheck source=scripts/postgres/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-DUMP=${1:-}
-TARGET_CONTAINER=${2:-}
+DUMP=${1:-${INFRA_ARG_FILE:-}}
+TARGET_CONTAINER=${2:-${INFRA_ARG_CONTAINER:-}}
 [[ -f "$DUMP" && "$(basename "$DUMP")" == *.sql.gz ]] || {
   printf 'Usage: %s DOWNLOADED_CLUSTER.sql.gz DISPOSABLE_CONTAINER\n' "$0" >&2
   exit 2
 }
 valid_backup_name "$(basename "$DUMP")" || { printf 'Refusing unsafe backup filename\n' >&2; exit 2; }
+validate_downloaded_artifact_path "$DUMP"
 verify_artifact_checksum "$DUMP"
 gzip -t "$DUMP"
 [[ "$TARGET_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]] || { printf 'Invalid target container name\n' >&2; exit 2; }

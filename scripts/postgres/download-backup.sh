@@ -3,7 +3,7 @@ set -euo pipefail
 # shellcheck source=scripts/postgres/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-NAME=${1:-}
+NAME=${1:-${INFRA_ARG_NAME:-}}
 valid_backup_name "$NAME" || {
   printf 'Usage: %s GENERATED_BACKUP_NAME\n' "$0" >&2
   exit 2

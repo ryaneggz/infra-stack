@@ -106,6 +106,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-infraadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       POSTGRES_BACKUP_BUCKET: ${POSTGRES_BACKUP_BUCKET:-postgres-backups}
+      MINIO_UPLOAD_PRE_PUT_DELAY: ${MINIO_UPLOAD_PRE_PUT_DELAY:-0}
       MC_CONFIG_DIR: /tmp/.mc
     entrypoint: ["/bin/sh"]
     volumes:

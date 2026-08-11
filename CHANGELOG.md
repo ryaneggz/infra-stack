@@ -10,4 +10,4 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Security
 
-- Restore only checksum-verified MinIO downloads, enforce restrictive backup modes and secure bind preflight, and reject concurrent/replayed publication.
+- Restore only checksum-verified MinIO downloads, enforce restrictive backup modes and secure bind preflight, reject shell-source Make arguments, and atomically prevent concurrent/replayed S3 publication.

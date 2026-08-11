@@ -13,4 +13,6 @@ backups/
 *.sha256
 *.pid
 *.log
+__pycache__/
+*.pyc
 .DS_Store

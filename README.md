@@ -31,7 +31,7 @@ make up         # exactly the four core databases
 make smoke      # health/auth/network plus backup and restore verification
 ```
 
-`make ps`, `make logs`, `make pull`, and `make down` cover normal lifecycle operations. Startup, clients, backup, download, and smoke targets automatically run `make preflight`: MinIO and PostgreSQL backup host directories are created with mode `0700`, checked for symlinks and wrong ownership, and only then passed to Compose. Long bind syntax sets `create_host_path: false`, so Docker cannot silently create an insecure root-owned MinIO path. `make down` preserves data. `make reset CONFIRM=destroy` is the explicit, irreversible reset; it deletes database volumes, MinIO host data, and local backups.
+`make ps`, `make logs`, `make pull`, and `make down` cover normal lifecycle operations. Startup, clients, backup, download, and smoke targets automatically run `make preflight`: MinIO and PostgreSQL backup host directories are created with mode `0700`, checked for symlinks and wrong ownership, and only then passed to Compose. Long bind syntax sets `create_host_path: false`, so Docker cannot silently create an insecure root-owned MinIO path. `make down` preserves data. `INFRA_CONFIRM_RESET=destroy make reset` is the explicit, irreversible reset; it deletes database volumes, MinIO host data, and local backups.
 
 ## Services
 
@@ -118,13 +118,13 @@ All UI ports are loopback-bound. Defaults: CloudBeaver `8978`, pgAdmin `5050`, R
 ## PostgreSQL backup and restore
 
 ```bash
-make backup-db DB=app   # custom-format ..._app_<128-bit-id>.dump + .sha256
+INFRA_ARG_DB=app make backup-db   # custom-format ..._app_<128-bit-id>.dump + .sha256
 make backup-all         # gzip SQL ..._cluster_<128-bit-id>.sql.gz + .sha256 (SENSITIVE)
 make verify-backups     # local pair + remote MinIO object/checksum
 make list-backups
 ```
 
-Publication uses a non-blocking exclusive host lock and a random 128-bit name. Existing local files or remote keys are rejected—never overwritten. The pinned `mc` upload uses complete single-part puts, ownership metadata, checksum-before-data ordering, and guarded cleanup that removes only keys carrying the current attempt token. A concurrent backup fails closed; retrying an already-published name leaves the existing pair untouched.
+Publication uses a non-blocking exclusive host lock and a random 128-bit name. Existing local files or remote keys are rejected—never overwritten. Each pinned [`mc put`](https://docs.min.io/community/minio-object-store/reference/minio-mc/mc-put.html) sends the supported [S3 conditional write](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html) header `-H 'If-None-Match:*'` with multipart disabled; MinIO atomically rejects a raced or existing key with HTTP 412. Upload-attempt metadata, checksum-before-data ordering, and guarded cleanup remove only keys proven to belong to the current attempt. Smoke forces two writers past the advisory pre-check, proves exactly one conditional PUT wins, and verifies the winner was neither overwritten nor deleted; a separate retry test covers pre-existing keys.
 
 **Always restore downloaded MinIO bytes, never the untested local source artifact.** Download tooling creates a new mode-`0700` staging directory, fetches both the object and sidecar, validates the sidecar filename and SHA-256, and writes both as `0600`:
 
@@ -149,7 +149,7 @@ scripts/postgres/restore-all.sh "$downloaded" pg17-restore
 docker rm -fv pg17-restore
 ```
 
-`make download-backup NAME=...`, `make restore-db FILE=... TARGET=restore_test`, and `make restore-all FILE=... CONTAINER=...` expose the same guarded operator tools. `make smoke` downloads both pairs into separate clean staging directories, restores only those downloaded bytes, queries known markers, tests lock/retry rejection, and checks restrictive modes. Read the replication path in [`docs/minio-replication-roadmap.md`](docs/minio-replication-roadmap.md).
+`INFRA_ARG_NAME=... make download-backup`, `INFRA_ARG_FILE=... INFRA_ARG_TARGET=restore_test make restore-db`, and `INFRA_ARG_FILE=... INFRA_ARG_CONTAINER=pg17-restore make restore-all` expose the same guarded operator tools. Values intentionally travel through the inherited process environment rather than Make recipe source. Legacy `DB=`, `NAME=`, `FILE=`, `TARGET=`, `CONTAINER=`, and `CONFIRM=` Make assignments are rejected before expansion. `make security-test` runs quote, semicolon, command-substitution, whitespace, and traversal payloads against every affected target. `make smoke` downloads both pairs into separate clean staging directories, restores only those downloaded bytes, queries known markers, tests lock/retry/conditional-race rejection, and checks restrictive modes. Read the replication path in [`docs/minio-replication-roadmap.md`](docs/minio-replication-roadmap.md).
 
 ## Troubleshooting
 

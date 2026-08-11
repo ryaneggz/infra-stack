@@ -4,7 +4,29 @@ SHELL := /usr/bin/env bash
 COMPOSE = docker compose --env-file .env -f compose.yml
 CLIENTS = $(COMPOSE) -f compose.clients.yml
 
-.PHONY: help init preflight network config pull up down ps logs clients clients-pgadmin backup-db backup-all list-backups download-backup verify-backups restore-db restore-all smoke reset
+# Values that reach operator scripts must arrive through the process environment.
+# Legacy command-line Make variables are rejected before Make can expand payloads.
+ifneq ($(origin DB),undefined)
+$(error DB= is unsafe; use INFRA_ARG_DB=... make backup-db)
+endif
+ifneq ($(origin NAME),undefined)
+$(error NAME= is unsafe; use INFRA_ARG_NAME=... make download-backup)
+endif
+ifneq ($(origin FILE),undefined)
+$(error FILE= is unsafe; use INFRA_ARG_FILE=... make restore-db/restore-all)
+endif
+ifneq ($(origin TARGET),undefined)
+$(error TARGET= is unsafe; use INFRA_ARG_TARGET=... make restore-db)
+endif
+ifneq ($(origin CONTAINER),undefined)
+$(error CONTAINER= is unsafe; use INFRA_ARG_CONTAINER=... make restore-all)
+endif
+ifneq ($(origin CONFIRM),undefined)
+$(error CONFIRM= is unsafe; use INFRA_CONFIRM_RESET=destroy make reset)
+endif
+unexport DB NAME FILE TARGET CONTAINER CONFIRM
+
+.PHONY: help init preflight network config pull up down ps logs clients clients-pgadmin backup-db backup-all list-backups download-backup verify-backups restore-db restore-all security-test smoke reset
 help: ## Show commands
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
@@ -45,9 +67,8 @@ ps: ## Show service status
 logs: ## Follow core service logs
 	@$(COMPOSE) logs -f --tail=100
 
-backup-db: preflight ## Back up one database: make backup-db DB=app
-	@test -n "$(DB)" || { echo 'DB is required: make backup-db DB=app' >&2; exit 2; }
-	@./scripts/postgres/backup-db.sh "$(DB)"
+backup-db: preflight ## Back up one database: INFRA_ARG_DB=app make backup-db
+	@./scripts/postgres/backup-db.sh
 
 backup-all: preflight ## Back up the cluster (sensitive role hashes included)
 	@./scripts/postgres/backup-all.sh
@@ -55,26 +76,26 @@ backup-all: preflight ## Back up the cluster (sensitive role hashes included)
 list-backups: preflight ## List remote PostgreSQL backup objects
 	@./scripts/postgres/list-backups.sh
 
-download-backup: preflight ## Download+verify remote pair: make download-backup NAME=...
-	@test -n "$(NAME)" || { echo 'NAME is required: make download-backup NAME=...' >&2; exit 2; }
-	@./scripts/postgres/download-backup.sh "$(NAME)"
+download-backup: preflight ## Download+verify: INFRA_ARG_NAME=... make download-backup
+	@./scripts/postgres/download-backup.sh
 
 verify-backups: preflight ## Verify local and remote backup pairs
 	@./scripts/postgres/verify-backups.sh
 
-restore-db: preflight ## Restore custom backup: make restore-db FILE=... TARGET=restore_test
-	@test -n "$(FILE)" -a -n "$(TARGET)" || { echo 'FILE and TARGET are required' >&2; exit 2; }
-	@./scripts/postgres/restore-db.sh "$(FILE)" "$(TARGET)"
+restore-db: preflight ## Restore custom backup using INFRA_ARG_FILE/INFRA_ARG_TARGET
+	@./scripts/postgres/restore-db.sh
 
-restore-all: preflight ## Restore cluster dump into disposable container: FILE=... CONTAINER=...
-	@test -n "$(FILE)" -a -n "$(CONTAINER)" || { echo 'FILE and CONTAINER are required' >&2; exit 2; }
-	@./scripts/postgres/restore-all.sh "$(FILE)" "$(CONTAINER)"
+restore-all: preflight ## Restore cluster using INFRA_ARG_FILE/INFRA_ARG_CONTAINER
+	@./scripts/postgres/restore-all.sh
+
+security-test: preflight ## Prove Make arguments cannot execute shell source
+	@./scripts/test-make-args.py
 
 smoke: preflight network ## Exercise download, auth, backup, and both restore formats
 	@./scripts/smoke.sh
 
-reset: ## DESTROYS all local data; requires CONFIRM=destroy
-	@test "$(CONFIRM)" = destroy || { echo 'Refusing. Re-run: make reset CONFIRM=destroy' >&2; exit 2; }
+reset: ## DESTROYS all local data; requires INFRA_CONFIRM_RESET=destroy
+	@test "$${INFRA_CONFIRM_RESET:-}" = destroy || { echo 'Refusing. Re-run: INFRA_CONFIRM_RESET=destroy make reset' >&2; exit 2; }
 	@set -a; source ./.env; set +a; \
 		$(CLIENTS) --profile pgadmin down --volumes --remove-orphans; \
 		rm -rf -- "$${MINIO_DATA_DIR:-./data/minio}" "$${POSTGRES_BACKUP_DIR:-./backups/postgres}"

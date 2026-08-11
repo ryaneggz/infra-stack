@@ -3,7 +3,7 @@ set -euo pipefail
 # shellcheck source=scripts/postgres/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-DB=${1:-}
+DB=${1:-${INFRA_ARG_DB:-}}
 valid_identifier "$DB" || {
   printf 'Usage: %s DATABASE (SQL identifier only)\n' "$0" >&2
   exit 2
