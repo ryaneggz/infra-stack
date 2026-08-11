@@ -55,7 +55,7 @@ GitHub Actions performs:
 - secure mode and Compose base/overlay/profile validation;
 - 112 adversarial Make-injection probes and localhost-port assertions;
 - image pulls and a full four-service smoke;
-- bucket initialization, independent checksum/artifact conditional-write conflicts, metadata ownership, downloads/checksums, both restore formats;
+- bucket initialization, independent checksum/artifact conditional-write conflicts, metadata ownership, downloads/checksums, both restore formats, and bounded fresh-target readiness/timeout behavior;
 - strict cleanup proving zero containers, volumes, network, `.env`, data, or backups remain.
 
 Run the closest local equivalent:

@@ -16,4 +16,4 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Security
 
-- Restore only checksum-verified S3 downloads, enforce restrictive backup modes and secure bind preflight, reject shell-source Make arguments, and atomically prevent concurrent/replayed S3 publication.
+- Restore only checksum-verified S3 downloads, enforce restrictive backup modes and secure bind preflight, reject shell-source Make arguments, atomically prevent concurrent/replayed S3 publication, and bound fresh PostgreSQL target readiness before cluster restore.

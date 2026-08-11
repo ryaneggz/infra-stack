@@ -12,6 +12,7 @@
 - **Slow first start/CI**: the Timescale all-extensions image is large. Later pulls can use Docker layer cache.
 - **Interrupted backup**: run `make verify-backups`. Local files remain for inspection; remote cleanup removes only attempt-owned objects.
 - **Restore rejected**: use the path printed by `make download-backup`. Restore scripts reject local source dumps, symlinks, malformed names, missing sidecars, and checksum mismatches.
+- **Cluster target readiness timeout**: inspect `docker logs <container>` and confirm the disposable target is running PostgreSQL 17. `restore-all` waits 180 seconds by default; use process-only `INFRA_RESTORE_READY_TIMEOUT=300` (allowed range 1–600) only when healthy initialization is known to need longer.
 - **Cleanup failure in CI**: inspect reported container/volume/network/path IDs. `scripts/ci-cleanup.sh` intentionally turns leftovers into a failed job.
 
 For normal recovery order, see [operations](operations.md#failure-recovery); for data recovery, see [backups and restore](backups-and-restore.md).

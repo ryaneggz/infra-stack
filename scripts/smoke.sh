@@ -178,20 +178,32 @@ printf 'Restoring downloaded custom-format bytes into a disposable database...\n
 "$ROOT/scripts/postgres/restore-db.sh" "$custom_download" restore_smoke
 [[ $("${compose_cmd[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d restore_smoke -Atqc "SELECT value FROM smoke_marker WHERE id=1") == backup-restore-ok ]]
 
-printf 'Restoring downloaded cluster bytes into a disposable PostgreSQL 17 container...\n'
+printf 'Testing bounded readiness and restoring into a newly started PostgreSQL 17 container...\n'
+# Delay the image's normal entrypoint so restore-all must own readiness waiting.
 docker run -d --name "$restore_container" --network "$INFRA_NETWORK" \
-  -e POSTGRES_PASSWORD=restore-only "$POSTGRES_IMAGE" >/dev/null
-stable_checks=0
-for _ in {1..90}; do
-  if docker exec "$restore_container" pg_isready -U postgres >/dev/null 2>&1; then
-    ((stable_checks += 1))
-    ((stable_checks >= 3)) && break
-  else
-    stable_checks=0
-  fi
-  sleep 2
-done
-((stable_checks >= 3)) || { printf 'Disposable PostgreSQL target never became stably ready.\n' >&2; exit 1; }
+  -e POSTGRES_PASSWORD=restore-only "$POSTGRES_IMAGE" \
+  bash -c 'sleep 8; exec /docker-entrypoint.sh postgres' >/dev/null
+readiness_log="$BACKUP_DIR/.restore-readiness-timeout.log"
+set +e
+INFRA_RESTORE_READY_TIMEOUT=2 \
+  "$ROOT/scripts/postgres/restore-all.sh" "$cluster_download" "$restore_container" \
+  >"$readiness_log" 2>&1
+readiness_rc=$?
+set -e
+((readiness_rc == 1)) || {
+  cat "$readiness_log" >&2
+  printf 'Expected readiness timeout exit 1, got %s.\n' "$readiness_rc" >&2
+  exit 1
+}
+grep -Fq "Timed out after 2s waiting for PostgreSQL target $restore_container to become ready." "$readiness_log"
+if docker exec "$restore_container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+  printf 'Delayed target became ready before the wait-path test.\n' >&2
+  exit 1
+fi
+wait_started=$SECONDS
 "$ROOT/scripts/postgres/restore-all.sh" "$cluster_download" "$restore_container"
+wait_elapsed=$((SECONDS - wait_started))
+((wait_elapsed >= 3)) || { printf 'restore-all did not demonstrably wait for startup.\n' >&2; exit 1; }
+rm -f "$readiness_log"
 [[ $(docker exec "$restore_container" psql -X -U postgres -d smoke_db -Atqc "SELECT value FROM smoke_marker WHERE id=1") == backup-restore-ok ]]
-printf 'Smoke test passed using MinIO-downloaded bytes for both restore formats.\n'
+printf 'Smoke test passed using MinIO-downloaded bytes for both restore formats and bounded target readiness.\n'

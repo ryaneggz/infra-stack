@@ -43,7 +43,7 @@ docker compose --env-file .env -f compose.yml exec postgres \
 
 `pg_dumpall` contains roles and password hashes. Treat the gzip and checksum as sensitive: mode `0600`, restricted operator access, encrypted storage/transport, no commits, chat uploads, or casual copies.
 
-Restore into a fresh PostgreSQL 17 container using the same Timescale all-extensions image:
+Restore into a fresh PostgreSQL 17 container using the same Timescale all-extensions image. Start it and invoke restore immediately; `restore-all` waits for three consecutive readiness checks (up to 180 seconds by default), then verifies PostgreSQL 17 before consuming the dump:
 
 ```bash
 docker run -d --name pg17-restore --network infra \
@@ -56,7 +56,7 @@ INFRA_ARG_CONTAINER=pg17-restore \
 docker rm -fv pg17-restore
 ```
 
-Verify application data and roles before deleting the disposable target.
+Verify application data and roles before deleting the disposable target. For unusually slow hosts, set a bounded process-environment override from 1–600 seconds, for example `INFRA_RESTORE_READY_TIMEOUT=300` before `make restore-all`. A timeout exits nonzero with the target name and elapsed limit; it never starts the restore.
 
 ## Argument safety and limitations
 

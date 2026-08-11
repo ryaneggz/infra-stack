@@ -11,7 +11,7 @@ Only `.example.env` is tracked. Run `make init` once; it copies the template thr
 | Redis | `REDIS_IMAGE`, `REDIS_PASSWORD`, `REDIS_PORT`, `REDIS_CPUS`, `REDIS_MEMORY` | Image, auth, port, limits |
 | MinIO/S3 | `MINIO_IMAGE`, `AWS_CLI_IMAGE`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_PORT`, `MINIO_CONSOLE_PORT`, `MINIO_DATA_DIR`, `MINIO_CPUS`, `MINIO_MEMORY`, `POSTGRES_BACKUP_BUCKET` | Server, official S3 CLI, root auth, storage, limits, backup bucket |
 | MongoDB | `MONGO_IMAGE`, `MONGO_ROOT_USERNAME`, `MONGO_ROOT_PASSWORD`, `MONGO_INITDB_DATABASE`, `MONGO_PORT`, `MONGO_CPUS`, `MONGO_MEMORY` | Image, credentials, port, limits |
-| Backups | `POSTGRES_BACKUP_DIR` | Mode-`0700` local dump/download root |
+| Backups | `POSTGRES_BACKUP_DIR`; process-only `INFRA_RESTORE_READY_TIMEOUT` | Mode-`0700` local dump/download root; optional 1–600 second cluster-target readiness limit (default 180) |
 | Clients | `CLOUDBEAVER_IMAGE`, `CLOUDBEAVER_PORT`, `PGADMIN_IMAGE`, `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD`, `PGADMIN_PORT`, `REDISINSIGHT_IMAGE`, `REDISINSIGHT_PORT`, `MONGO_EXPRESS_IMAGE`, `MONGO_EXPRESS_PORT`, `MONGO_EXPRESS_BASICAUTH_USERNAME`, `MONGO_EXPRESS_BASICAUTH_PASSWORD` | Optional UI images, ports, auth |
 
 Keep `BIND_HOST=127.0.0.1` unless a separately reviewed firewall/TLS design requires otherwise. Relative data paths resolve from the repository root.
