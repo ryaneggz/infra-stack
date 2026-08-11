@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install static checks
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Check repository hygiene and shell
+        run: |
+          set -euo pipefail
+          test "$(git ls-files | grep -E '(^|/)([^/]*\.env[^/]*)$' || true)" = ".example.env"
+          test ! -e .env
+          git check-ignore -q .env
+          git check-ignore -q .env.production
+          git check-ignore -q local.env
+          if git check-ignore -q .example.env; then
+            echo '.example.env must remain included' >&2
+            exit 1
+          fi
+          find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -x
+          python3 -m py_compile scripts/*.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path('.')
+          paths = [Path(item) for item in subprocess.check_output(
+              ['git', 'ls-files'], text=True
+          ).splitlines()]
+          client_command = 'm' + 'c'
+          forbidden_literals = (
+              'minio/' + client_command,
+              client_command + '_run',
+              'scripts/' + 'minio',
+              'MINIO_' + 'MC_IMAGE',
+          )
+          command_contract = re.compile(r'(?m)(?:^|[;&|]\s*)' + client_command + r'(?:\s|$)')
+          for path in paths:
+              try:
+                  text = path.read_text()
+              except UnicodeDecodeError:
+                  continue
+              assert not any(value in text for value in forbidden_literals), f'archived client reference remains in {path}'
+              assert not command_contract.search(text), f'archived client command contract remains in {path}'
+          user_facing = [Path('.example.env'), Path('compose.yml'), Path('compose.clients.yml'), *Path('docs').glob('*.md'), Path('README.md')]
+          for path in user_facing:
+              assert '@sha256:' not in path.read_text(), f'stale digest claim in {path}'
+          source = Path('scripts/s3cli/upload-backup.sh').read_text()
+          assert source.count("--if-none-match '*'") == 2, 'both production PUTs must remain conditional'
+          assert 'amazon/aws-cli:2.36.20' in Path('.example.env').read_text()
+          print('static S3 contract, concise image, and conditional-write checks passed')
+          PY
+          python3 scripts/lint-docs.py
+          git diff --check
+
+      - name: Generate ephemeral configuration
+        run: |
+          make init
+          test "$(stat -c '%a' .env)" = 600
+          ! grep -q 'CHANGE_ME_' .env
+          make preflight
+          test "$(stat -c '%a' data/minio)" = 700
+          test "$(stat -c '%a' backups/postgres)" = 700
+
+      - name: Validate Compose base, overlay, and profiles
+        run: make config
+
+      - name: Validate fixed image tags and amd64/arm64 manifests
+        run: python3 scripts/validate-image-tags.py
+
+      - name: Adversarial Make argument security
+        run: make security-test
+
+      - name: Assert every default published port is loopback-only
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env -f compose.yml -f compose.clients.yml --profile pgadmin config --format json > /tmp/compose.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          model = json.loads(Path('/tmp/compose.json').read_text())
+          published = []
+          for service, config in model['services'].items():
+              for port in config.get('ports', []):
+                  published.append((service, port.get('host_ip'), port.get('published')))
+          assert published, 'expected published ports'
+          bad = [item for item in published if item[1] != '127.0.0.1']
+          assert not bad, f'non-loopback published ports: {bad}'
+          minio_data = [v for v in model['services']['minio']['volumes'] if v.get('target') == '/data']
+          assert len(minio_data) == 1, minio_data
+          # Older Compose versions omit an explicit false from normalized JSON.
+          assert minio_data[0].get('bind', {}).get('create_host_path') is not True, minio_data[0]
+          source = Path('compose.yml').read_text()
+          assert source.count('create_host_path: false') >= 3
+          print(f'verified {len(published)} loopback-only published ports and fail-closed MinIO bind')
+          PY
+
+      - name: Pull core and utility images
+        run: make pull
+
+      - name: Run full local smoke test
+        run: |
+          set -o pipefail
+          if ! timeout 30m make smoke; then
+            docker compose --env-file .env -f compose.yml ps || true
+            docker compose --env-file .env -f compose.yml logs --no-color --tail=200 || true
+            exit 1
+          fi
+
+      - name: Assert restrictive backup modes
+        run: |
+          set -euo pipefail
+          test "$(stat -c '%a' backups/postgres)" = 700
+          test "$(stat -c '%a' backups/postgres/downloads)" = 700
+          while IFS= read -r -d '' file; do
+            test "$(stat -c '%a' "$file")" = 600
+          done < <(find backups/postgres -type f -print0)
+          cluster=$(find backups/postgres -maxdepth 1 -type f -name '*_cluster_*.sql.gz' -print -quit)
+          test -n "$cluster"
+          test "$(stat -c '%a' "$cluster")" = 600
+          test "$(stat -c '%a' "$cluster.sha256")" = 600
+
+      - name: Cleanup and assert no runtime state remains
+        if: always()
+        run: ./scripts/ci-cleanup.sh

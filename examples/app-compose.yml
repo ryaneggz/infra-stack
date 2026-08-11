@@ -1,0 +1,11 @@
+services:
+  app:
+    image: alpine:3.22.1
+    command: ["sh", "-c", "getent hosts postgres redis minio mongo && sleep infinity"]
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: ${INFRA_NETWORK:-infra}
