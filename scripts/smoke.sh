@@ -42,11 +42,12 @@ CREATE TABLE smoke_marker (id integer PRIMARY KEY, value text NOT NULL);
 INSERT INTO smoke_marker VALUES (1, 'backup-restore-ok');
 SQL
 
-printf 'Testing Redis, MinIO, and MongoDB authentication...\n'
+printf 'Testing Redis, MinIO, AWS CLI, and MongoDB authentication...\n'
 [[ $("${compose_cmd[@]}" exec -T redis redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping) == PONG ]]
-# Variables intentionally expand inside the mc utility container.
+[[ $(s3cli_run -c 'aws --version') == aws-cli/2.36.20* ]]
+# Variables intentionally expand inside the AWS CLI utility container.
 # shellcheck disable=SC2016
-mc_run -c 'mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && mc mb --ignore-existing "local/$POSTGRES_BACKUP_BUCKET" >/dev/null && mc ready local'
+s3cli_run -c '. /scripts/s3cli/common.sh && create_bucket_if_missing "$POSTGRES_BACKUP_BUCKET" && s3api head-bucket --bucket "$POSTGRES_BACKUP_BUCKET" >/dev/null'
 "${compose_cmd[@]}" exec -T mongo mongosh --quiet \
   --username "$MONGO_ROOT_USERNAME" --password "$MONGO_ROOT_PASSWORD" \
   --authenticationDatabase admin --eval 'if (db.adminCommand({ping: 1}).ok !== 1) quit(2)'
@@ -75,6 +76,7 @@ printf 'Creating and remotely verifying both backup formats...\n'
 custom_dump=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*_smoke_db_*.dump' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
 cluster_dump=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*_cluster_*.sql.gz' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d ' ' -f 2-)
 [[ -n "$custom_dump" && -n "$cluster_dump" ]]
+"$ROOT/scripts/postgres/list-backups.sh" | grep -Fq "$(basename "$custom_dump")"
 [[ $(stat -c '%a' "$BACKUP_DIR") == 700 ]]
 for sensitive in "$custom_dump" "$custom_dump.sha256" "$cluster_dump" "$cluster_dump.sha256"; do
   [[ $(stat -c '%a' "$sensitive") == 600 ]]
@@ -99,13 +101,13 @@ cp "$custom_dump" "$race_artifact"
 chmod 0600 "$race_artifact" "$race_artifact.sha256"
 (
   # shellcheck disable=SC2030
-  export MINIO_UPLOAD_PRE_PUT_DELAY=2
+  export S3_UPLOAD_PRE_PUT_DELAY=2
   upload_backup "$race_artifact"
 ) >"$BACKUP_DIR/.race-writer-1.log" 2>&1 &
 writer_one=$!
 (
   # shellcheck disable=SC2030,SC2031
-  export MINIO_UPLOAD_PRE_PUT_DELAY=2
+  export S3_UPLOAD_PRE_PUT_DELAY=2
   upload_backup "$race_artifact"
 ) >"$BACKUP_DIR/.race-writer-2.log" 2>&1 &
 writer_two=$!
@@ -119,9 +121,9 @@ if ! { ((writer_one_rc == 0 && writer_two_rc != 0)) || ((writer_one_rc != 0 && w
   exit 1
 fi
 if ((writer_one_rc != 0)); then loser_log="$BACKUP_DIR/.race-writer-1.log"; else loser_log="$BACKUP_DIR/.race-writer-2.log"; fi
-grep -Fq 'pre-conditions you specified did not hold' "$loser_log"
+grep -Fq 'PreconditionFailed' "$loser_log"
 rm -f "$BACKUP_DIR/.race-writer-1.log" "$BACKUP_DIR/.race-writer-2.log"
-mc_run /scripts/minio/verify-backup.sh "$race_name" "$POSTGRES_BACKUP_BUCKET"
+s3cli_run /scripts/s3cli/verify-backup.sh "$race_name" "$POSTGRES_BACKUP_BUCKET"
 printf 'Atomic checksum If-None-Match race passed: one writer rejected, winner retained and verified.\n'
 "$ROOT/scripts/postgres/verify-backups.sh"
 
@@ -140,8 +142,8 @@ chmod 0600 "$artifact_conflict" "$artifact_conflict.sha256"
 rm -f "$artifact_barrier"
 (
   # shellcheck disable=SC2030,SC2031
-  export MINIO_UPLOAD_PRE_PUT_DELAY=5
-  export MINIO_UPLOAD_TEST_READY_FILE=/backups/postgres/.artifact-put-race-ready
+  export S3_UPLOAD_PRE_PUT_DELAY=5
+  export S3_UPLOAD_TEST_READY_FILE=/backups/postgres/.artifact-put-race-ready
   upload_backup "$artifact_conflict"
 ) >"$artifact_log" 2>&1 &
 artifact_uploader=$!
@@ -150,14 +152,14 @@ for _ in {1..100}; do
   sleep 0.1
 done
 [[ -f "$artifact_barrier" ]] || { printf 'Artifact race uploader never reached the post-check barrier.\n' >&2; exit 1; }
-mc_run /scripts/minio/create-artifact-conflict.sh \
+s3cli_run /scripts/s3cli/create-artifact-conflict.sh \
   "$artifact_conflict_name" "$POSTGRES_BACKUP_BUCKET" "$artifact_conflict_id"
 set +e
 wait "$artifact_uploader"; artifact_uploader_rc=$?
 set -e
 ((artifact_uploader_rc != 0)) || { printf 'Artifact conditional PUT unexpectedly overwrote the external key.\n' >&2; exit 1; }
-grep -Fq 'pre-conditions you specified did not hold' "$artifact_log"
-mc_run /scripts/minio/verify-artifact-conflict.sh \
+grep -Fq 'PreconditionFailed' "$artifact_log"
+s3cli_run /scripts/s3cli/verify-artifact-conflict.sh \
   "$artifact_conflict_name" "$POSTGRES_BACKUP_BUCKET" "$artifact_conflict_id"
 rm -f "$artifact_conflict" "$artifact_conflict.sha256" "$artifact_barrier" "$artifact_log"
 printf 'Atomic artifact If-None-Match conflict passed: external bytes retained; owned checksum cleaned.\n'

@@ -37,7 +37,40 @@ jobs:
             exit 1
           fi
           find scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck -x
-          test "$(grep -Foc -- "-H 'If-None-Match:*'" scripts/minio/upload-backup.sh)" = 2
+          python3 -m py_compile scripts/*.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path('.')
+          paths = [Path(item) for item in subprocess.check_output(
+              ['git', 'ls-files'], text=True
+          ).splitlines()]
+          client_command = 'm' + 'c'
+          forbidden_literals = (
+              'minio/' + client_command,
+              client_command + '_run',
+              'scripts/' + 'minio',
+              'MINIO_' + 'MC_IMAGE',
+          )
+          command_contract = re.compile(r'(?m)(?:^|[;&|]\s*)' + client_command + r'(?:\s|$)')
+          for path in paths:
+              try:
+                  text = path.read_text()
+              except UnicodeDecodeError:
+                  continue
+              assert not any(value in text for value in forbidden_literals), f'archived client reference remains in {path}'
+              assert not command_contract.search(text), f'archived client command contract remains in {path}'
+          user_facing = [Path('.example.env'), Path('compose.yml'), Path('compose.clients.yml'), *Path('docs').glob('*.md'), Path('README.md')]
+          for path in user_facing:
+              assert '@sha256:' not in path.read_text(), f'stale digest claim in {path}'
+          source = Path('scripts/s3cli/upload-backup.sh').read_text()
+          assert source.count("--if-none-match '*'") == 2, 'both production PUTs must remain conditional'
+          assert 'amazon/aws-cli:2.36.20' in Path('.example.env').read_text()
+          print('static S3 contract, concise image, and conditional-write checks passed')
+          PY
+          python3 scripts/lint-docs.py
           git diff --check
 
       - name: Generate ephemeral configuration
@@ -51,6 +84,9 @@ jobs:
 
       - name: Validate Compose base, overlay, and profiles
         run: make config
+
+      - name: Validate fixed image tags and amd64/arm64 manifests
+        run: python3 scripts/validate-image-tags.py
 
       - name: Adversarial Make argument security
         run: make security-test

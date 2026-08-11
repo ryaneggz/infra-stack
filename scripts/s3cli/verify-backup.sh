@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+umask 077
+
+# shellcheck source=scripts/s3cli/common.sh
+. /scripts/s3cli/common.sh
 
 name=${1:-}
 bucket=${2:-${POSTGRES_BACKUP_BUCKET:-postgres-backups}}
@@ -13,13 +17,18 @@ if [ ! -s "$artifact" ] || [ ! -s "$checksum" ]; then
   exit 1
 fi
 
-mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+stage=$(mktemp -d /tmp/s3cli-verify.XXXXXX)
+trap 'rm -rf "$stage"' HUP INT TERM EXIT
+get_object "$bucket" "$name.sha256" "$stage/$name.sha256" >/dev/null
+get_object "$bucket" "$name" "$stage/$name" >/dev/null
 expected=$(cut -d ' ' -f 1 "$checksum")
-remote_expected=$(mc cat "local/$bucket/$name.sha256" | cut -d ' ' -f 1)
-actual=$(mc cat "local/$bucket/$name" | sha256sum | cut -d ' ' -f 1)
+remote_expected=$(cut -d ' ' -f 1 "$stage/$name.sha256")
+actual=$(sha256sum "$stage/$name" | cut -d ' ' -f 1)
 if [ "$expected" != "$remote_expected" ] || [ "$expected" != "$actual" ]; then
   echo "Remote backup pair mismatch: $name" >&2
   exit 1
 fi
-mc stat "local/$bucket/$name" >/dev/null
-mc stat "local/$bucket/$name.sha256" >/dev/null
+head_object "$bucket" "$name" >/dev/null
+head_object "$bucket" "$name.sha256" >/dev/null
+rm -rf "$stage"
+trap - HUP INT TERM EXIT

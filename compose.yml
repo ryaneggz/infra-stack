@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-infra-stack}
 
 services:
   postgres:
-    image: ${POSTGRES_IMAGE:-timescale/timescaledb-ha:pg17.6-ts2.21.3-all@sha256:10018cdcf4dce486671ceecae177729a2e0506b288e19acba1eda701b76b608f}
+    image: ${POSTGRES_IMAGE:-timescale/timescaledb-ha:pg17.6-ts2.21.3-all}
     container_name: postgres
     restart: unless-stopped
     environment:
@@ -30,7 +30,7 @@ services:
       start_period: 30s
 
   redis:
-    image: ${REDIS_IMAGE:-redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf}
+    image: ${REDIS_IMAGE:-redis:7.4.7-alpine}
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
@@ -50,7 +50,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
 
   minio:
-    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2025-09-07T16-13-09Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -76,7 +76,7 @@ services:
       start_period: 10s
 
   mongo:
-    image: ${MONGO_IMAGE:-mongo:8.0.28-noble@sha256:346f9f37eb0f1b75600929979a8f62372e6c717e58a291736db09188acaad0fe}
+    image: ${MONGO_IMAGE:-mongo:8.0.28-noble}
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-infra}
@@ -96,19 +96,22 @@ services:
       retries: 18
       start_period: 20s
 
-  mc:
-    image: ${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727}
+  s3cli:
+    image: ${AWS_CLI_IMAGE:-amazon/aws-cli:2.36.20}
     profiles: [tools]
     depends_on:
       minio:
         condition: service_healthy
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-infraadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-infraadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_PAGER: ""
+      S3_ENDPOINT: http://minio:9000
       POSTGRES_BACKUP_BUCKET: ${POSTGRES_BACKUP_BUCKET:-postgres-backups}
-      MINIO_UPLOAD_PRE_PUT_DELAY: ${MINIO_UPLOAD_PRE_PUT_DELAY:-0}
-      MINIO_UPLOAD_TEST_READY_FILE: ${MINIO_UPLOAD_TEST_READY_FILE:-}
-      MC_CONFIG_DIR: /tmp/.mc
+      S3_UPLOAD_PRE_PUT_DELAY: ${S3_UPLOAD_PRE_PUT_DELAY:-0}
+      S3_UPLOAD_TEST_READY_FILE: ${S3_UPLOAD_TEST_READY_FILE:-}
     entrypoint: ["/bin/sh"]
     volumes:
       - type: bind
@@ -117,8 +120,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ./scripts/minio
-        target: /scripts/minio
+        source: ./scripts/s3cli
+        target: /scripts/s3cli
         read_only: true
         bind:
           create_host_path: false

@@ -2,6 +2,9 @@
 set -eu
 umask 077
 
+# shellcheck source=scripts/s3cli/common.sh
+. /scripts/s3cli/common.sh
+
 name=${1:-}
 bucket=${2:-}
 token=${3:-}
@@ -13,8 +16,6 @@ case "$token" in *[!a-f0-9]*|'') echo "Invalid test owner token" >&2; exit 2 ;; 
 
 source_file=/tmp/external-artifact
 printf 'external-conflict-%s' "$token" > "$source_file"
-mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-mc put --disable-multipart -H 'If-None-Match:*' \
-  -H "X-Amz-Meta-Test-Owner:$token" \
-  "$source_file" "local/$bucket/$name" >/dev/null
+s3api put-object --bucket "$bucket" --key "$name" --body "$source_file" \
+  --if-none-match '*' --metadata "test-owner=$token" >/dev/null
 echo "Inserted external artifact conflict: $name"

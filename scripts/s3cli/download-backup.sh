@@ -2,6 +2,9 @@
 set -eu
 umask 077
 
+# shellcheck source=scripts/s3cli/common.sh
+. /scripts/s3cli/common.sh
+
 name=${1:-}
 destination=${2:-}
 bucket=${3:-${POSTGRES_BACKUP_BUCKET:-postgres-backups}}
@@ -16,11 +19,10 @@ fi
 [ -z "$(ls -A "$destination")" ] || { echo "Download staging directory must be empty" >&2; exit 2; }
 chmod 0700 "$destination"
 
-mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-mc stat "local/$bucket/$name" >/dev/null
-mc stat "local/$bucket/$name.sha256" >/dev/null
-mc cp "local/$bucket/$name.sha256" "$destination/$name.sha256" >/dev/null
-mc cp "local/$bucket/$name" "$destination/$name" >/dev/null
+head_object "$bucket" "$name" >/dev/null
+head_object "$bucket" "$name.sha256" >/dev/null
+get_object "$bucket" "$name.sha256" "$destination/$name.sha256" >/dev/null
+get_object "$bucket" "$name" "$destination/$name" >/dev/null
 chmod 0600 "$destination/$name" "$destination/$name.sha256"
 
 read -r expected listed extra < "$destination/$name.sha256"

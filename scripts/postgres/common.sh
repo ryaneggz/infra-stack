@@ -49,8 +49,8 @@ compose() {
   docker compose "${args[@]}" "$@"
 }
 
-mc_run() {
-  compose --profile tools run --rm --no-deps --user "$(id -u):$(id -g)" mc "$@"
+s3cli_run() {
+  compose --profile tools run --rm --no-deps --user "$(id -u):$(id -g)" s3cli "$@"
 }
 
 valid_identifier() {
@@ -108,5 +108,5 @@ upload_backup() {
   attempt=${name%.*}
   [[ "$name" == *.sql.gz ]] && attempt=${name%.sql.gz}
   attempt=${attempt##*_}
-  mc_run /scripts/minio/upload-backup.sh "/backups/postgres/$name" "$POSTGRES_BACKUP_BUCKET" "$attempt"
+  s3cli_run /scripts/s3cli/upload-backup.sh "/backups/postgres/$name" "$POSTGRES_BACKUP_BUCKET" "$attempt"
 }

@@ -18,7 +18,7 @@ cleanup_download() {
 }
 trap cleanup_download EXIT
 
-mc_run /scripts/minio/download-backup.sh "$NAME" \
+s3cli_run /scripts/s3cli/download-backup.sh "$NAME" \
   "/backups/postgres/downloads/$(basename "$stage")" "$POSTGRES_BACKUP_BUCKET" >&2
 verify_artifact_checksum "$stage/$NAME"
 chmod 0600 "$stage/$NAME" "$stage/$NAME.sha256"

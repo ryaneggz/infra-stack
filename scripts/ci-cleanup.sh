@@ -25,12 +25,13 @@ if [[ -f "$ROOT/.env" ]]; then
   fi
 fi
 
-if command -v sudo >/dev/null 2>&1; then
-  sudo rm -rf -- "$ROOT/data" "$ROOT/backups" "$ROOT/.env" \
-    /tmp/compose.json /tmp/infra-stack-pg_dumpall-restore.*
-else
-  rm -rf -- "$ROOT/data" "$ROOT/backups" "$ROOT/.env" \
-    /tmp/compose.json /tmp/infra-stack-pg_dumpall-restore.*
+cleanup_paths=(
+  "$ROOT/data" "$ROOT/backups" "$ROOT/.env"
+  /tmp/compose.json /tmp/infra-stack-pg_dumpall-restore.*
+)
+if ! rm -rf -- "${cleanup_paths[@]}"; then
+  command -v sudo >/dev/null 2>&1 || { printf 'Cleanup needs elevated permissions but sudo is unavailable.\n' >&2; exit 1; }
+  sudo -n rm -rf -- "${cleanup_paths[@]}"
 fi
 
 remaining_containers=$(docker ps -aq --filter "label=com.docker.compose.project=$project")

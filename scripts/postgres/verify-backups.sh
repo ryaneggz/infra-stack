@@ -16,6 +16,6 @@ for checksum in "${checksums[@]}"; do
     printf 'Backup pair must have mode 0600: %s\n' "$name" >&2
     exit 1
   }
-  mc_run /scripts/minio/verify-backup.sh "$name" "$POSTGRES_BACKUP_BUCKET"
+  s3cli_run /scripts/s3cli/verify-backup.sh "$name" "$POSTGRES_BACKUP_BUCKET"
 done
 printf 'Verified %d local and remote backup pair(s).\n' "${#checksums[@]}"
