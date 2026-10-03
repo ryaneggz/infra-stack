@@ -1,0 +1,211 @@
+# Langfuse inside the msb-infra sandbox.
+#
+# SHARED:  postgres  -> the existing `infra-postgres` container, reached over the
+#                       external network `infra-services_default`, using a
+#                       DEDICATED role + database (see bootstrap.sql).
+# PRIVATE: clickhouse, redis, minio -> Langfuse-only. NO published ports; they
+#                       exist solely on the internal `langfuse` network.
+#
+# NAMING: shared-candidate containers carry neutral names (infra-redis,
+# infra-minio) matching the existing infra-postgres, so nothing has to be
+# renamed when another sandbox starts using them. Langfuse-only containers keep
+# the langfuse- prefix. Compose SERVICE keys stay short (redis, minio) because
+# they are the in-network DNS names the app config points at.
+#
+# PROMOTING redis or minio to shared later: the infra sandbox already reserves
+# host forwards for 6379 and 9000 (see runbook-langfuse.sh). Those forwards are
+# inert while no guest process listens on those ports, so promotion is just:
+# add a `ports: ["0.0.0.0:6379:6379"]` line to the service, attach it to the
+# `shared` network, and restart that one container. No sandbox recreate.
+# Caveat: redis here runs `noeviction` for Langfuse's queue. A second tenant
+# sharing it inherits that policy -- give other workloads their own instance
+# unless you have checked they tolerate it. MinIO shares cleanly via a separate
+# bucket and a scoped access key (never the root credential).
+#
+# Only langfuse-web is published, and only inside the guest. The sandbox has no
+# route from any other sandbox and the host has no route to guest IPs, so the
+# single msb `-p 127.0.0.1:3100:3000` forward is the only way in.
+
+name: langfuse
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "3" }
+
+services:
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    container_name: langfuse-web
+    logging: *logging
+    restart: always
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      redis:      { condition: service_healthy }
+      minio:      { condition: service_healthy }
+    ports:
+      - "0.0.0.0:3000:3000"        # guest-only; msb forwards host 127.0.0.1:3100 here
+    environment: &langfuse_env
+      # Next.js standalone binds to $HOSTNAME, which docker sets to the container
+      # id -> it resolved to the container IP and localhost probes were refused.
+      # Pin it so the app listens on all interfaces and the healthcheck works.
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: ${LANGFUSE_DATABASE_URL:?set in .env}
+      SALT: ${LANGFUSE_SALT:?}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      AUTH_DISABLE_SIGNUP: ${LANGFUSE_DISABLE_SIGNUP:-false}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_PASSWORD:?}
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+    networks: [langfuse, shared]
+    mem_limit: 1536m
+    cpus: 1.0
+    healthcheck:
+      # 127.0.0.1, not localhost: localhost resolves to ::1 first and the
+      # server listens on IPv4 only, so the probe was refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    container_name: langfuse-worker
+    logging: *logging
+    restart: always
+    depends_on:
+      langfuse-web: { condition: service_healthy }
+    environment: *langfuse_env
+    networks: [langfuse, shared]
+    mem_limit: 1536m
+    cpus: 1.0
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:25.12
+    container_name: langfuse-clickhouse
+    logging: *logging
+    restart: always
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse-config.d/zz-limits.xml:/etc/clickhouse-server/config.d/zz-limits.xml:ro
+    networks: [langfuse]
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    mem_limit: 2g
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  redis:
+    image: docker.io/redis:7
+    container_name: infra-redis
+    logging: *logging
+    restart: always
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?}
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis_data:/data
+    networks: [langfuse]
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -qx PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+
+  # docker.io/minio/minio no longer pulls (MinIO withdrew their Docker Hub
+  # images); upstream Langfuse moved to Chainguard for the same reason.
+  # The bucket is pre-created as a directory on first boot, which is how
+  # upstream's compose does it -- no `mc` init container needed.
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: infra-minio
+    logging: *logging
+    restart: always
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-langfuse}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_BROWSER: "off"
+    volumes:
+      - minio_data:/data
+    networks: [langfuse]
+    mem_limit: 768m
+    cpus: 0.5
+    healthcheck:
+      # The Chainguard image ships mc but no wget/curl.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Shared Cloudflare ingress for this sandbox, starting with
+  # langfuse-dev.mifune.dev. Its OWN named tunnel, separate
+  # from prod's oh-cloud-cloudflared, so prod keeps no path to Langfuse.
+  # Reaches langfuse-web over the internal network -- the origin is never
+  # published anywhere. Only starts when you opt in:
+  #   docker compose --profile tunnel up -d
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: infra-cloudflared
+    logging: *logging
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate run
+    environment:
+      # Optional at parse time (compose interpolates every service, even ones
+      # a profile excludes). cloudflared fails loudly if it is empty.
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN:-}
+    depends_on:
+      langfuse-web: { condition: service_healthy }
+    networks: [langfuse]
+    mem_limit: 256m
+    cpus: 0.25
+    restart: always
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
+  redis_data:
+  minio_data:
+
+networks:
+  langfuse:
+    internal: false          # egress for image-internal needs only; no ingress is published
+  shared:
+    name: infra-services_default
+    external: true

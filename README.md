@@ -60,4 +60,6 @@ Start with the [documentation index](docs/README.md):
 - [Troubleshooting](docs/troubleshooting.md)
 - [S3 replication and server-migration roadmap](docs/minio-replication-roadmap.md)
 
+The live msb infra VM configuration is in [`deployments/msb-infra/`](deployments/msb-infra/README.md).
+
 See also [`examples/app-compose.yml`](examples/app-compose.yml), [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), and [LICENSE](LICENSE).

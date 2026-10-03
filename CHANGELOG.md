@@ -6,6 +6,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- Track the msb infra deployment (pgvector Postgres and Langfuse) with log rotation and ClickHouse disk limits under `deployments/msb-infra/` ([#3](https://github.com/ryaneggz/infra-stack/issues/3)).
 - Add the local-first four-database stack, optional clients, verified PostgreSQL backups/restores, SSH tunnels, focused documentation, and CI ([#1](https://github.com/ryaneggz/infra-stack/issues/1)).
 
 ### Changed
